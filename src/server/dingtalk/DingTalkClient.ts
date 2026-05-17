@@ -19,6 +19,20 @@ type DingTalkAccessTokenResponse = {
   expires_in?: number;
 };
 
+type DingTalkDepartment = {
+  dept_id?: string | number;
+  deptId?: string | number;
+  name?: string;
+};
+
+type DingTalkUserListResult = {
+  list?: DingTalkUserDetail[];
+  has_more?: boolean;
+  hasMore?: boolean;
+  next_cursor?: number;
+  nextCursor?: number;
+};
+
 export type DingTalkUserDetail = {
   userid: string;
   userId?: string;
@@ -43,6 +57,15 @@ export type DingTalkSelectableUser = {
 
 function configuredUrl(value?: string) {
   return value && value.trim().length > 0 ? value.trim() : null;
+}
+
+function normalizeOptionalText(value: unknown) {
+  return typeof value === "string" ? value.trim() : value == null ? "" : String(value).trim();
+}
+
+function normalizeOptionalId(value: unknown) {
+  const text = normalizeOptionalText(value);
+  return text.length > 0 ? text : "";
 }
 
 function fillTemplate(template: string, params: Record<string, string>) {
@@ -138,7 +161,7 @@ export class DingTalkClient {
 
   async getUserDepartmentInfo(user: DingTalkUserDetail) {
     const departmentName = user.department?.[0] || "";
-    const departmentId = user.dept_id_list?.[0] ? String(user.dept_id_list[0]) : "";
+    const departmentId = normalizeOptionalId(user.dept_id_list?.[0]);
     if (departmentName || this.mockEnabled) {
       return { departmentId, departmentName: departmentName || "信息技术部" };
     }
@@ -159,6 +182,10 @@ export class DingTalkClient {
   }
 
   async listUsers(keyword?: string) {
+    return this.listOrganizationUsers({ keyword, maxUsers: 500 });
+  }
+
+  async listOrganizationUsers(options: { keyword?: string; maxUsers?: number } = {}) {
     if (this.mockEnabled) {
       return [
         { dingtalkUserId: "demo-admin", name: "王五", departmentName: "信息技术部", position: "IT管理员" },
@@ -166,24 +193,101 @@ export class DingTalkClient {
       ] satisfies DingTalkSelectableUser[];
     }
 
-    const accessToken = await this.getAccessToken();
-    const data = await this.fetchOapi<{ list?: DingTalkUserDetail[] }>(
-      this.withAccessToken("https://oapi.dingtalk.com/topapi/v2/user/list", accessToken),
-      {
-        dept_id: 1,
-        cursor: 0,
-        size: 100,
-        language: "zh_CN"
+    // 中文注释：通讯录按部门递归读取，解决只读根部门导致人员选择为空的问题。
+    const rootDeptId = process.env.DINGTALK_CONTACT_ROOT_DEPT_ID || "1";
+    const maxUsers = options.maxUsers ?? Number(process.env.DINGTALK_CONTACT_SYNC_MAX_USERS || 5000);
+    const departmentIds = await this.listDepartmentIds(rootDeptId);
+    const users = new Map<string, DingTalkSelectableUser>();
+    const errors: Error[] = [];
+    for (const deptId of departmentIds) {
+      let departmentUsers: DingTalkSelectableUser[] = [];
+      try {
+        departmentUsers = await this.listUsersByDepartment(deptId);
+      } catch (error) {
+        const typedError = error instanceof Error ? error : new Error(String(error));
+        errors.push(typedError);
+        if (typedError.message.includes("qyapi_get_department_member")) break;
+        // 中文注释：单个部门成员读取失败时继续尝试其他部门，避免选择器整体不可用。
+        console.error(`钉钉部门成员读取失败，部门ID=${deptId}：`, typedError.message);
+        continue;
       }
-    );
-    const normalized = await Promise.all((data.list || []).map((item) => this.toSelectableUser(item)));
-    const text = keyword?.trim().toLowerCase();
+      for (const user of departmentUsers) {
+        if (!user.dingtalkUserId) continue;
+        users.set(user.dingtalkUserId, { ...users.get(user.dingtalkUserId), ...user });
+        if (users.size >= maxUsers) break;
+      }
+      if (users.size >= maxUsers) break;
+    }
+    if (users.size === 0 && errors.length > 0) {
+      throw errors[0];
+    }
+
+    const normalized = Array.from(users.values()).sort((first, second) => first.name.localeCompare(second.name, "zh-CN"));
+    const text = options.keyword?.trim().toLowerCase();
     if (!text) return normalized;
     return normalized.filter((item) =>
       [item.dingtalkUserId, item.name, item.departmentName, item.position]
         .filter(Boolean)
         .some((value) => String(value).toLowerCase().includes(text))
     );
+  }
+
+  private async listDepartmentIds(rootDeptId: string) {
+    const visited = new Set<string>();
+    const queue = [rootDeptId];
+    while (queue.length > 0) {
+      const deptId = queue.shift()!;
+      if (visited.has(deptId)) continue;
+      visited.add(deptId);
+      try {
+        const children = await this.listSubDepartments(deptId);
+        for (const child of children) {
+          const childId = normalizeOptionalId(child.dept_id ?? child.deptId);
+          if (childId && !visited.has(childId)) queue.push(childId);
+        }
+      } catch (error) {
+        // 中文注释：部门列表权限不足时不中断根部门读取，至少让已配置部门的人员可被选择。
+        console.error("钉钉子部门读取失败，已降级为当前部门：", error instanceof Error ? error.message : error);
+      }
+    }
+    return Array.from(visited);
+  }
+
+  private async listSubDepartments(deptId: string) {
+    const accessToken = await this.getAccessToken();
+    const url = configuredUrl(process.env.DINGTALK_DEPARTMENT_LIST_URL);
+    const payload = { dept_id: Number(deptId), language: "zh_CN" };
+    return url
+      ? this.fetchJson<DingTalkDepartment[]>(url, { method: "POST", accessToken, body: payload })
+      : this.fetchOapi<DingTalkDepartment[]>(
+          this.withAccessToken("https://oapi.dingtalk.com/topapi/v2/department/listsub", accessToken),
+          payload
+        );
+  }
+
+  private async listUsersByDepartment(deptId: string) {
+    const accessToken = await this.getAccessToken();
+    const url = configuredUrl(process.env.DINGTALK_USER_LIST_URL);
+    const users: DingTalkSelectableUser[] = [];
+    let cursor = 0;
+    for (let page = 0; page < 100; page += 1) {
+      const payload = {
+        dept_id: Number(deptId),
+        cursor,
+        size: 100,
+        language: "zh_CN"
+      };
+      const data = url
+        ? await this.fetchJson<DingTalkUserListResult>(url, { method: "POST", accessToken, body: payload })
+        : await this.fetchOapi<DingTalkUserListResult>(
+            this.withAccessToken("https://oapi.dingtalk.com/topapi/v2/user/list", accessToken),
+            payload
+          );
+      users.push(...(await Promise.all((data.list || []).map((item) => this.toSelectableUser(item)))));
+      if (!(data.has_more ?? data.hasMore)) break;
+      cursor = data.next_cursor ?? data.nextCursor ?? cursor + 100;
+    }
+    return users;
   }
 
   async sendWorkNotification(receiverUserId: string, content: string) {
@@ -219,7 +323,7 @@ export class DingTalkClient {
   async toSelectableUser(detail: DingTalkUserDetail): Promise<DingTalkSelectableUser> {
     const userId = detail.userid || detail.userId || "";
     let department = {
-      departmentId: detail.dept_id_list?.[0] ? String(detail.dept_id_list[0]) : "",
+      departmentId: normalizeOptionalId(detail.dept_id_list?.[0]),
       departmentName: detail.department?.[0] || ""
     };
     try {
@@ -228,13 +332,13 @@ export class DingTalkClient {
       // 中文注释：通讯录权限不完整时保留用户主信息，人员选择仍可使用。
     }
     return {
-      dingtalkUserId: userId,
-      name: detail.name,
-      departmentId: department.departmentId,
-      departmentName: department.departmentName,
-      position: detail.position || detail.title || "",
-      mobile: detail.mobile,
-      avatar: detail.avatar
+      dingtalkUserId: normalizeOptionalId(userId),
+      name: normalizeOptionalText(detail.name),
+      departmentId: normalizeOptionalId(department.departmentId),
+      departmentName: normalizeOptionalText(department.departmentName),
+      position: normalizeOptionalText(detail.position || detail.title),
+      mobile: normalizeOptionalText(detail.mobile),
+      avatar: normalizeOptionalText(detail.avatar)
     };
   }
 

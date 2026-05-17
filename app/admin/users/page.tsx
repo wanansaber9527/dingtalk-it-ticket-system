@@ -4,7 +4,7 @@
 
 import { useEffect, useState } from "react";
 import { Button, Form, Input, Modal, Popconfirm, Select, Space, Table, Tabs, Typography, message } from "antd";
-import { DeleteOutlined, PlusOutlined, SearchOutlined, TeamOutlined } from "@ant-design/icons";
+import { DeleteOutlined, PlusOutlined, SearchOutlined, SyncOutlined, TeamOutlined } from "@ant-design/icons";
 import { apiDelete, apiGet, apiPost, apiPut } from "@/src/lib/clientApi";
 import { roleLabels, userStatusLabels } from "@/src/lib/labels";
 
@@ -42,6 +42,7 @@ export default function UsersPage() {
   const [mode, setMode] = useState<AddMode>("admin");
   const [people, setPeople] = useState<DingTalkPerson[]>([]);
   const [peopleLoading, setPeopleLoading] = useState(false);
+  const [syncLoading, setSyncLoading] = useState(false);
   const [currentUser, setCurrentUser] = useState<User | null>(null);
   const [form] = Form.useForm();
 
@@ -117,6 +118,19 @@ export default function UsersPage() {
       message.error(error instanceof Error ? error.message : "钉钉人员列表获取失败，请手动输入 userId");
     } finally {
       setPeopleLoading(false);
+    }
+  }
+
+  async function syncDirectory() {
+    setSyncLoading(true);
+    try {
+      const result = await apiPost<{ total: number; created: number; updated: number }>("/api/admin/users/sync-dingtalk");
+      message.success(`同步完成：共 ${result.total} 人，新增 ${result.created} 人，更新 ${result.updated} 人`);
+      load();
+    } catch (error) {
+      message.error(error instanceof Error ? error.message : "同步钉钉成员目录失败");
+    } finally {
+      setSyncLoading(false);
     }
   }
 
@@ -245,7 +259,17 @@ export default function UsersPage() {
             {
               key: "all",
               label: "全部用户",
-              children: <Table rowKey="id" dataSource={items} columns={allColumns} scroll={{ x: 1100 }} />
+              children: (
+                <Space direction="vertical" size={12} style={{ width: "100%" }}>
+                  <Space wrap>
+                    <Button icon={<SyncOutlined />} loading={syncLoading} onClick={syncDirectory}>
+                      同步钉钉成员目录
+                    </Button>
+                    <Typography.Text type="secondary">同步后成员会进入系统用户列表，默认角色为普通员工。</Typography.Text>
+                  </Space>
+                  <Table rowKey="id" dataSource={items} columns={allColumns} scroll={{ x: 1100 }} />
+                </Space>
+              )
             }
           ]}
         />
@@ -283,10 +307,12 @@ export default function UsersPage() {
       <Modal title="从钉钉选择人员" open={pickerOpen} onCancel={() => setPickerOpen(false)} footer={null} width={820} destroyOnClose>
         <Space direction="vertical" size={12} style={{ width: "100%" }}>
           <Input.Search
+            className="directory-search"
             placeholder="搜索姓名、userId、部门或岗位"
-            enterButton={<SearchOutlined />}
+            enterButton="搜索"
             onSearch={searchPeople}
             allowClear
+            prefix={<SearchOutlined />}
           />
           <Table
             rowKey="dingtalkUserId"

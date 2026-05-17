@@ -9,6 +9,10 @@ export type PersonnelInput = Partial<DingTalkSelectableUser> & {
   dingtalkUserId: string;
 };
 
+function textValue(value: unknown) {
+  return typeof value === "string" ? value.trim() : value == null ? "" : String(value).trim();
+}
+
 export class UserService {
   constructor(
     private readonly prisma: PrismaClient = defaultPrisma,
@@ -19,7 +23,7 @@ export class UserService {
     requireRole(operator, ["IT_ADMIN", "SUPER_ADMIN"]);
     return this.prisma.user.findMany({
       orderBy: [{ role: "desc" }, { createdAt: "desc" }],
-      take: 200
+      take: 2000
     });
   }
 
@@ -94,8 +98,34 @@ export class UserService {
       return await this.dingtalkClient.listUsers(keyword);
     } catch (error) {
       console.error("钉钉人员列表获取失败：", error);
+      const detail = error instanceof Error ? error.message : String(error);
+      if (detail.includes("qyapi_get_department_member")) {
+        throw new AppError(
+          502,
+          "DINGTALK_USERS_PERMISSION_MISSING",
+          "钉钉人员列表获取失败：应用缺少通讯录成员读取权限 qyapi_get_department_member，请在钉钉开放平台开通后重试，或先手动输入 userId"
+        );
+      }
       throw new AppError(502, "DINGTALK_USERS_FAILED", "钉钉人员列表获取失败，请手动输入 userId");
     }
+  }
+
+  async syncDingTalkDirectory(operator: User) {
+    requireRole(operator, ["IT_ADMIN", "SUPER_ADMIN"]);
+    const people = await this.searchDingTalkUsers(undefined, operator);
+    let created = 0;
+    let updated = 0;
+    for (const person of people) {
+      const existing = await this.prisma.user.findUnique({ where: { dingtalkUserId: person.dingtalkUserId } });
+      await this.upsertDirectoryUser(person, existing);
+      if (existing) updated += 1;
+      else created += 1;
+    }
+    return {
+      total: people.length,
+      created,
+      updated
+    };
   }
 
   private async upsertPersonnel(input: PersonnelInput, role: UserRole) {
@@ -128,18 +158,44 @@ export class UserService {
     });
   }
 
+  private async upsertDirectoryUser(person: DingTalkSelectableUser, existing: User | null) {
+    return this.prisma.user.upsert({
+      where: { dingtalkUserId: person.dingtalkUserId },
+      update: {
+        name: person.name,
+        mobile: person.mobile || null,
+        departmentId: person.departmentId || null,
+        departmentName: person.departmentName || null,
+        position: person.position || null,
+        avatar: person.avatar || null
+      },
+      create: {
+        dingtalkUserId: person.dingtalkUserId,
+        name: person.name,
+        mobile: person.mobile || null,
+        departmentId: person.departmentId || null,
+        departmentName: person.departmentName || null,
+        position: person.position || null,
+        avatar: person.avatar || null,
+        role: existing?.role || "EMPLOYEE",
+        status: existing?.status || "ACTIVE"
+      }
+    });
+  }
+
   private async resolvePersonnel(input: PersonnelInput): Promise<DingTalkSelectableUser> {
-    const userId = input.dingtalkUserId?.trim();
+    const userId = textValue(input.dingtalkUserId);
     if (!userId) throw new AppError(400, "DINGTALK_USER_ID_REQUIRED", "请填写钉钉 userId");
-    if (input.name?.trim()) {
+    if (textValue(input.name)) {
       return {
         dingtalkUserId: userId,
-        name: input.name.trim(),
-        departmentId: input.departmentId || "",
-        departmentName: input.departmentName || "",
-        position: input.position || "",
-        mobile: input.mobile || "",
-        avatar: input.avatar || ""
+        // 中文注释：前端选择人员时部门 ID 可能是数字，这里统一转字符串，避免 Prisma 写入失败。
+        name: textValue(input.name),
+        departmentId: textValue(input.departmentId),
+        departmentName: textValue(input.departmentName),
+        position: textValue(input.position),
+        mobile: textValue(input.mobile),
+        avatar: textValue(input.avatar)
       };
     }
 
@@ -148,7 +204,16 @@ export class UserService {
       return this.dingtalkClient.toSelectableUser(detail);
     } catch (error) {
       console.error("钉钉用户详情获取失败：", error);
-      throw new AppError(502, "DINGTALK_USER_DETAIL_FAILED", "钉钉用户信息获取失败，请检查 userId 或使用钉钉选择人员");
+      // 中文注释：手动 userId 添加时即使详情权限临时失败，也允许先入库，后续目录同步会补齐姓名部门岗位。
+      return {
+        dingtalkUserId: userId,
+        name: userId,
+        departmentId: "",
+        departmentName: "",
+        position: "",
+        mobile: "",
+        avatar: ""
+      };
     }
   }
 }
