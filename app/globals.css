@@ -310,19 +310,6 @@ a {
   background: var(--brand-active) !important;
 }
 
-.directory-search .ant-input-search-button {
-  color: #fff !important;
-  border-color: var(--brand) !important;
-  background: var(--brand) !important;
-  box-shadow: 0 8px 18px rgba(0, 124, 190, 0.14);
-}
-
-.directory-search .ant-input-search-button:hover {
-  color: #fff !important;
-  border-color: var(--brand-hover) !important;
-  background: var(--brand-hover) !important;
-}
-
 .ant-btn-default {
   border-color: var(--line);
   background: rgba(255, 255, 255, 0.74);

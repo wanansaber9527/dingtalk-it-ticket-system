@@ -121,7 +121,7 @@ export class TicketService {
       ticket,
       applicant,
       "TICKET_CREATED",
-      this.ticketNotice(ticket, `你的IT工单已提交，工单编号：${ticket.ticketNo}。`)
+      `你的IT工单已提交，工单编号：${ticket.ticketNo}。`
     );
 
     const handler = category.defaultHandlerUserId
@@ -132,10 +132,10 @@ export class TicketService {
         ticket,
         handler,
         "NEW_TICKET_PENDING",
-        this.ticketNotice(ticket, `有新的IT工单待处理：${ticket.ticketNo}。`)
+        `有新的IT工单待处理：${ticket.ticketNo} ${ticket.title}。`
       );
     } else {
-      await this.notifyAdmins(ticket, `有新的IT工单待处理：${ticket.ticketNo}。`);
+      await this.notifyAdmins(ticket, `有新的IT工单待处理：${ticket.ticketNo} ${ticket.title}。`);
     }
 
     return { ticket: await this.getTicketById(ticket.id), duplicateWarning: Boolean(duplicate) };
@@ -214,9 +214,9 @@ export class TicketService {
       updated,
       handler,
       "TICKET_ASSIGNED",
-      this.ticketNotice(updated, `你有一条新的IT工单：${updated.ticketNo}。`)
+      `你有一条新的IT工单：${updated.ticketNo} ${updated.title}。`
     );
-    await this.notifyApplicant(updated, "你的工单状态已更新为：已分派。");
+    await this.notifyApplicant(updated, `你的工单状态已更新为：已分派。`);
     return this.getTicketById(id);
   }
 
@@ -242,7 +242,7 @@ export class TicketService {
       updated,
       handler,
       "TICKET_ASSIGNED",
-      this.ticketNotice(updated, `你有一条新的IT工单：${updated.ticketNo}。`)
+      `你有一条新的IT工单：${updated.ticketNo} ${updated.title}。`
     );
     return this.getTicketById(id);
   }
@@ -366,7 +366,7 @@ export class TicketService {
         updated,
         { dingtalkUserId: updated.handlerUserId, name: updated.handlerName },
         "STATUS_UPDATED",
-        this.ticketNotice(updated, `工单 ${updated.ticketNo} 被申请人退回，请继续处理。`)
+        `工单 ${updated.ticketNo} 被申请人退回，请继续处理。`
       );
     }
     return this.getTicketById(id);
@@ -530,38 +530,12 @@ export class TicketService {
     return text[status];
   }
 
-  private formatDate(date: Date) {
-    return date.toLocaleString("zh-CN", {
-      timeZone: "Asia/Shanghai",
-      hour12: false
-    });
-  }
-
-  private descriptionSummary(description: string) {
-    const text = description.replace(/\s+/g, " ").trim();
-    return text.length > 80 ? `${text.slice(0, 80)}...` : text || "-";
-  }
-
-  private ticketNotice(ticket: Ticket, headline: string) {
-    // 中文注释：钉钉工作通知保持短文本，但集中补齐工单关键上下文，方便移动端快速判断。
-    return [
-      headline,
-      `工单标题：${ticket.title}`,
-      `工单类型：${ticket.categoryName || "-"}`,
-      `提交人：${ticket.applicantName}`,
-      `执行人员：${ticket.handlerName || "待分派"}`,
-      `当前状态：${this.statusText(ticket.status)}`,
-      `提交时间：${this.formatDate(ticket.createdAt)}`,
-      `描述摘要：${this.descriptionSummary(ticket.description)}`
-    ].join("\n");
-  }
-
   private async notifyApplicant(ticket: Ticket, content: string) {
     await this.notificationService.sendTicketNotification(
       ticket,
       { dingtalkUserId: ticket.applicantUserId, name: ticket.applicantName },
       "STATUS_UPDATED",
-      this.ticketNotice(ticket, content)
+      content
     );
   }
 
@@ -571,7 +545,7 @@ export class TicketService {
       take: 20
     });
     for (const admin of admins) {
-      await this.notificationService.sendTicketNotification(ticket, admin, "NEW_TICKET_PENDING", this.ticketNotice(ticket, content));
+      await this.notificationService.sendTicketNotification(ticket, admin, "NEW_TICKET_PENDING", content);
     }
   }
 }
