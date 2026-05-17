@@ -1,0 +1,269 @@
+// 中文注释：Prisma 数据模型定义，描述用户、工单、日志、通知、知识库和同步日志等核心表。
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "mysql"
+  url      = env("DATABASE_URL")
+}
+
+enum UserRole {
+  EMPLOYEE
+  IT_HANDLER
+  IT_ADMIN
+  SUPER_ADMIN
+}
+
+enum UserStatus {
+  ACTIVE
+  DISABLED
+}
+
+enum TicketPriority {
+  LOW
+  NORMAL
+  HIGH
+  URGENT
+}
+
+enum TicketStatus {
+  PENDING
+  ASSIGNED
+  PROCESSING
+  WAITING_CONFIRM
+  COMPLETED
+  CLOSED
+  REJECTED
+  CANCELLED
+}
+
+enum SatisfactionLevel {
+  SATISFIED
+  NORMAL
+  UNSATISFIED
+}
+
+enum AiSyncStatus {
+  PENDING
+  SUCCESS
+  FAILED
+}
+
+enum TicketActionType {
+  CREATE
+  ASSIGN
+  ACCEPT
+  COMMENT
+  TRANSFER
+  RESOLVE
+  REJECT
+  CONFIRM
+  CLOSE
+  CANCEL
+  REOPEN
+  STATUS_CHANGE
+  SATISFACTION
+  SYNC_AI_TABLE_FAILED
+  SYNC_AI_TABLE_SUCCESS
+}
+
+enum NotificationType {
+  TICKET_CREATED
+  NEW_TICKET_PENDING
+  TICKET_ASSIGNED
+  STATUS_UPDATED
+  TICKET_RESOLVED
+  TICKET_OVERDUE
+  UNSATISFIED_REVIEW
+}
+
+enum SendStatus {
+  PENDING
+  SUCCESS
+  FAILED
+}
+
+enum AiTableOperationType {
+  INSERT_TICKET
+  UPDATE_TICKET
+  INSERT_TICKET_LOG
+  INSERT_CATEGORY
+  UPDATE_CATEGORY
+  INSERT_KB
+  INSERT_SATISFACTION
+  RETRY
+}
+
+enum AiTableSyncLogStatus {
+  PENDING
+  SUCCESS
+  FAILED
+}
+
+model User {
+  id                String     @id @default(cuid())
+  dingtalkUserId    String     @unique
+  name              String
+  mobile            String?
+  departmentId      String?
+  departmentName    String?
+  position          String?
+  avatar            String?    @db.Text
+  role              UserRole   @default(EMPLOYEE)
+  status            UserStatus @default(ACTIVE)
+  createdAt         DateTime   @default(now())
+  updatedAt         DateTime   @updatedAt
+
+  applicantTickets  Ticket[]   @relation("ApplicantTickets")
+  handlerTickets    Ticket[]   @relation("HandlerTickets")
+}
+
+model Ticket {
+  id                         String           @id @default(cuid())
+  ticketNo                   String           @unique
+  title                      String
+  categoryId                 String?
+  categoryName               String
+  priority                   TicketPriority   @default(NORMAL)
+  status                     TicketStatus     @default(PENDING)
+  applicantUserId            String
+  applicantName              String
+  applicantDepartment        String?
+  applicantPosition          String?
+  handlerUserId              String?
+  handlerName                String?
+  description                String           @db.Text
+  attachments                String?          @db.Text
+  expectedResolveTime        DateTime?
+  firstResponseAt            DateTime?
+  resolvedAt                 DateTime?
+  closedAt                   DateTime?
+  slaFirstResponseDeadline   DateTime?
+  slaResolveDeadline         DateTime?
+  isFirstResponseOverdue     Boolean          @default(false)
+  isResolveOverdue           Boolean          @default(false)
+  resultSummary              String?          @db.Text
+  satisfactionLevel          SatisfactionLevel?
+  satisfactionComment        String?          @db.Text
+  aiTableRecordId            String?
+  aiSyncStatus               AiSyncStatus     @default(PENDING)
+  aiSyncError                String?          @db.Text
+  createdAt                  DateTime         @default(now())
+  updatedAt                  DateTime         @updatedAt
+
+  applicant                  User             @relation("ApplicantTickets", fields: [applicantUserId], references: [dingtalkUserId])
+  handler                    User?            @relation("HandlerTickets", fields: [handlerUserId], references: [dingtalkUserId])
+  logs                       TicketLog[]
+  notifications              Notification[]
+  aiSyncLogs                 AiTableSyncLog[]
+
+  @@index([status])
+  @@index([categoryId])
+  @@index([handlerUserId])
+  @@index([applicantUserId])
+  @@index([createdAt])
+}
+
+model TicketLog {
+  id             String           @id @default(cuid())
+  ticketId       String
+  ticketNo       String
+  operatorUserId String
+  operatorName   String
+  actionType     TicketActionType
+  fromStatus     TicketStatus?
+  toStatus       TicketStatus?
+  remark         String?          @db.Text
+  attachments    String?          @db.Text
+  createdAt      DateTime         @default(now())
+
+  ticket         Ticket           @relation(fields: [ticketId], references: [id], onDelete: Cascade)
+
+  @@index([ticketId])
+  @@index([ticketNo])
+  @@index([createdAt])
+}
+
+model TicketCategory {
+  id                    String   @id @default(cuid())
+  name                  String   @unique
+  description           String?  @db.Text
+  defaultHandlerUserId  String?
+  defaultHandlerName    String?
+  firstResponseMinutes  Int?
+  resolveMinutes        Int?
+  needAdminConfirm      Boolean  @default(false)
+  enabled               Boolean  @default(true)
+  sortOrder             Int      @default(0)
+  createdAt             DateTime @default(now())
+  updatedAt             DateTime @updatedAt
+}
+
+model KnowledgeBase {
+  id                    String   @id @default(cuid())
+  kbNo                  String   @unique
+  title                 String
+  categoryId            String?
+  categoryName          String?
+  problemDescription    String   @db.Text
+  solutionSteps         String   @db.Text
+  applicableDepartments String?  @db.Text
+  sourceTicketId        String?
+  sourceTicketNo        String?
+  maintainerUserId      String?
+  maintainerName        String?
+  enabled               Boolean  @default(false)
+  viewCount             Int      @default(0)
+  createdAt             DateTime @default(now())
+  updatedAt             DateTime @updatedAt
+
+  @@index([categoryId])
+  @@index([enabled])
+}
+
+model Notification {
+  id                String           @id @default(cuid())
+  ticketId          String?
+  ticketNo          String?
+  receiverUserId    String
+  receiverName      String
+  notificationType  NotificationType
+  content           String           @db.Text
+  sendStatus        SendStatus       @default(PENDING)
+  errorMessage      String?          @db.Text
+  createdAt         DateTime         @default(now())
+
+  ticket            Ticket?          @relation(fields: [ticketId], references: [id], onDelete: SetNull)
+
+  @@index([receiverUserId])
+  @@index([ticketNo])
+  @@index([createdAt])
+}
+
+model AiTableSyncLog {
+  id              String                @id @default(cuid())
+  ticketId        String?
+  ticketNo        String?
+  operationType   AiTableOperationType
+  requestPayload  String?               @db.LongText
+  responsePayload String?               @db.LongText
+  status          AiTableSyncLogStatus  @default(PENDING)
+  errorMessage    String?               @db.Text
+  createdAt       DateTime              @default(now())
+
+  ticket          Ticket?               @relation(fields: [ticketId], references: [id], onDelete: SetNull)
+
+  @@index([ticketNo])
+  @@index([status])
+  @@index([createdAt])
+}
+
+model SystemConfig {
+  id          String   @id @default(cuid())
+  configKey   String   @unique
+  configValue String   @db.Text
+  description String?  @db.Text
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+}
