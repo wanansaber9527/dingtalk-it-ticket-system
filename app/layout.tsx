@@ -5,7 +5,7 @@ import { Providers } from "./providers";
 import "./globals.css";
 
 export const metadata: Metadata = {
-  title: "钉钉IT工单系统",
+  title: "趣然工单系统",
   description: "公司内部 IT 工单提交、流转、通知与 AI 表格同步"
 };
 

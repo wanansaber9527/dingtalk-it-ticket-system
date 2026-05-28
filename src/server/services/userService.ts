@@ -1,13 +1,38 @@
 // 中文注释：业务服务层，封装工单系统核心业务规则和数据操作。
-import type { PrismaClient, User, UserRole } from "@prisma/client";
+import type { Prisma, PrismaClient, User, UserRole, UserStatus } from "@prisma/client";
 import { prisma as defaultPrisma } from "@/src/lib/prisma";
 import { requireRole, requireSuperAdmin } from "@/src/server/permissions";
 import { AppError } from "@/src/lib/http";
+import type { UserWithRoles } from "@/src/lib/userRoles";
 import { DingTalkClient, type DingTalkSelectableUser } from "@/src/server/dingtalk/DingTalkClient";
 
 export type PersonnelInput = Partial<DingTalkSelectableUser> & {
   dingtalkUserId: string;
 };
+
+type UserSummary = {
+  dingtalkUserId: string;
+  name: string;
+  departmentName?: string | null;
+};
+
+type SyncFailure = UserSummary & {
+  reason: string;
+};
+
+const userInclude = { roleAssignments: true } satisfies Prisma.UserInclude;
+
+function textValue(value: unknown) {
+  return typeof value === "string" ? value.trim() : value == null ? "" : String(value).trim();
+}
+
+function summary(user: Pick<User, "dingtalkUserId" | "name" | "departmentName">): UserSummary {
+  return {
+    dingtalkUserId: user.dingtalkUserId,
+    name: user.name,
+    departmentName: user.departmentName
+  };
+}
 
 export class UserService {
   constructor(
@@ -15,81 +40,87 @@ export class UserService {
     private readonly dingtalkClient = new DingTalkClient()
   ) {}
 
-  list(operator: User) {
-    requireRole(operator, ["IT_ADMIN", "SUPER_ADMIN"]);
+  list(operator: UserWithRoles, keyword?: string) {
+    requireRole(operator, ["SUPER_ADMIN"]);
+    const search = textValue(keyword);
     return this.prisma.user.findMany({
-      orderBy: [{ role: "desc" }, { createdAt: "desc" }],
-      take: 200
+      where: search
+        ? {
+            OR: [
+              { name: { contains: search } },
+              { dingtalkUserId: { contains: search } },
+              { departmentName: { contains: search } },
+              { position: { contains: search } },
+              { mobile: { contains: search } }
+            ]
+          }
+        : undefined,
+      include: userInclude,
+      orderBy: [{ status: "asc" }, { createdAt: "desc" }],
+      take: 2000
     });
   }
 
-  admins(operator: User) {
-    requireRole(operator, ["IT_ADMIN", "SUPER_ADMIN"]);
+  admins(operator: UserWithRoles) {
+    requireRole(operator, ["SUPER_ADMIN"]);
     return this.prisma.user.findMany({
-      where: { role: { in: ["IT_ADMIN", "SUPER_ADMIN"] }, status: "ACTIVE" },
-      orderBy: [{ role: "desc" }, { name: "asc" }]
-    });
-  }
-
-  executors(operator: User) {
-    requireRole(operator, ["IT_ADMIN", "SUPER_ADMIN"]);
-    return this.prisma.user.findMany({
-      where: { role: "IT_HANDLER", status: "ACTIVE" },
+      where: { roleAssignments: { some: { role: "SUPER_ADMIN" } }, status: "ACTIVE" },
+      include: userInclude,
       orderBy: { name: "asc" }
     });
   }
 
-  async updateRole(id: string, role: UserRole, operator: User, status?: "ACTIVE" | "DISABLED") {
-    requireSuperAdmin(operator);
-    return this.prisma.user.update({
-      where: { id },
-      data: {
-        role,
-        ...(status ? { status } : {})
-      }
-    });
-  }
-
-  handlers(operator: User) {
-    requireRole(operator, ["IT_ADMIN", "SUPER_ADMIN"]);
+  executors(operator: UserWithRoles) {
+    requireRole(operator, ["SUPER_ADMIN"]);
     return this.prisma.user.findMany({
-      where: { role: { in: ["IT_HANDLER", "IT_ADMIN", "SUPER_ADMIN"] }, status: "ACTIVE" },
+      where: { roleAssignments: { some: { role: "IT_HANDLER" } }, status: "ACTIVE" },
+      include: userInclude,
       orderBy: { name: "asc" }
     });
   }
 
-  async addAdmin(input: PersonnelInput, operator: User) {
+  async updateStatus(id: string, operator: UserWithRoles, status?: UserStatus) {
     requireSuperAdmin(operator);
-    return this.upsertPersonnel(input, "IT_ADMIN");
-  }
-
-  async removeAdmin(id: string, operator: User) {
-    requireSuperAdmin(operator);
-    const target = await this.prisma.user.findUnique({ where: { id } });
-    if (!target) throw new AppError(404, "USER_NOT_FOUND", "用户不存在");
-    if (target.role === "SUPER_ADMIN") {
-      throw new AppError(400, "SUPER_ADMIN_PROTECTED", "超级管理员不能在此删除");
+    if (!status) {
+      return this.prisma.user.findUniqueOrThrow({ where: { id }, include: userInclude });
     }
-    return this.prisma.user.update({ where: { id }, data: { role: "EMPLOYEE", status: "ACTIVE" } });
+    return this.prisma.user.update({ where: { id }, data: { status }, include: userInclude });
   }
 
-  async addExecutor(input: PersonnelInput, operator: User) {
+  handlers(operator: UserWithRoles) {
+    // 中文注释：处理人转交工单时也需要读取可转交的处理人列表。
+    requireRole(operator, ["SUPER_ADMIN", "IT_HANDLER"]);
+    return this.prisma.user.findMany({
+      where: { roleAssignments: { some: { role: "IT_HANDLER" } }, status: "ACTIVE" },
+      include: userInclude,
+      orderBy: { name: "asc" }
+    });
+  }
+
+  async addAdmin(input: PersonnelInput, operator: UserWithRoles) {
+    requireSuperAdmin(operator);
+    return this.upsertPersonnel(input, "SUPER_ADMIN");
+  }
+
+  async removeAdmin(id: string, operator: UserWithRoles) {
+    requireSuperAdmin(operator);
+    await this.prisma.userRoleAssignment.deleteMany({ where: { userId: id, role: "SUPER_ADMIN" } });
+    return this.prisma.user.findUniqueOrThrow({ where: { id }, include: userInclude });
+  }
+
+  async addExecutor(input: PersonnelInput, operator: UserWithRoles) {
     requireSuperAdmin(operator);
     return this.upsertPersonnel(input, "IT_HANDLER");
   }
 
-  async removeExecutor(id: string, operator: User) {
+  async removeExecutor(id: string, operator: UserWithRoles) {
     requireSuperAdmin(operator);
-    const target = await this.prisma.user.findUnique({ where: { id } });
-    if (!target) throw new AppError(404, "USER_NOT_FOUND", "用户不存在");
-    if (["IT_ADMIN", "SUPER_ADMIN"].includes(target.role)) {
-      throw new AppError(400, "ADMIN_NOT_EXECUTOR", "管理员不需要从执行人员中删除");
-    }
-    return this.prisma.user.update({ where: { id }, data: { role: "EMPLOYEE", status: "ACTIVE" } });
+    await this.prisma.userRoleAssignment.deleteMany({ where: { userId: id, role: "IT_HANDLER" } });
+    return this.prisma.user.findUniqueOrThrow({ where: { id }, include: userInclude });
   }
 
-  async searchDingTalkUsers(keyword: string | undefined, operator: User) {
-    requireRole(operator, ["IT_ADMIN", "SUPER_ADMIN"]);
+  async searchDingTalkUsers(keyword: string | undefined, operator: UserWithRoles) {
+    requireRole(operator, ["SUPER_ADMIN"]);
     try {
       return await this.dingtalkClient.listUsers(keyword);
     } catch (error) {
@@ -98,11 +129,62 @@ export class UserService {
     }
   }
 
+  async syncDingTalkDirectory(operator: UserWithRoles) {
+    requireRole(operator, ["SUPER_ADMIN"]);
+    const people = await this.searchDingTalkUsers(undefined, operator);
+    const peopleIds = new Set(people.map((person) => person.dingtalkUserId));
+    const existingUsers = await this.prisma.user.findMany({ include: userInclude });
+    const existingByUserId = new Map(existingUsers.map((user) => [user.dingtalkUserId, user]));
+    const created: UserSummary[] = [];
+    const updated: UserSummary[] = [];
+    const failed: SyncFailure[] = [];
+
+    for (const person of people) {
+      const existing = existingByUserId.get(person.dingtalkUserId) || null;
+      try {
+        const user = await this.upsertDirectoryUser(person, existing);
+        if (existing) updated.push(summary(user));
+        else created.push(summary(user));
+      } catch (error) {
+        failed.push({
+          dingtalkUserId: person.dingtalkUserId,
+          name: person.name || person.dingtalkUserId,
+          departmentName: person.departmentName,
+          reason: error instanceof Error ? error.message : "同步失败"
+        });
+      }
+    }
+
+    const removedCandidates = existingUsers.filter((user) => !peopleIds.has(user.dingtalkUserId) && user.status === "ACTIVE");
+    const removed: UserSummary[] = [];
+    for (const user of removedCandidates) {
+      try {
+        await this.prisma.user.update({ where: { id: user.id }, data: { status: "DISABLED" } });
+        removed.push(summary(user));
+      } catch (error) {
+        failed.push({
+          ...summary(user),
+          reason: error instanceof Error ? error.message : "停用失败"
+        });
+      }
+    }
+
+    return {
+      total: people.length,
+      createdCount: created.length,
+      updatedCount: updated.length,
+      removedCount: removed.length,
+      failedCount: failed.length,
+      created,
+      updated,
+      removed,
+      failed
+    };
+  }
+
   private async upsertPersonnel(input: PersonnelInput, role: UserRole) {
     const person = await this.resolvePersonnel(input);
-    const existing = await this.prisma.user.findUnique({ where: { dingtalkUserId: person.dingtalkUserId } });
-    const nextRole = existing?.role === "SUPER_ADMIN" ? "SUPER_ADMIN" : role;
-    return this.prisma.user.upsert({
+    const user = await this.prisma.user.upsert({
       where: { dingtalkUserId: person.dingtalkUserId },
       update: {
         name: person.name,
@@ -111,7 +193,6 @@ export class UserService {
         departmentName: person.departmentName || null,
         position: person.position || null,
         avatar: person.avatar || null,
-        role: nextRole,
         status: "ACTIVE"
       },
       create: {
@@ -122,9 +203,46 @@ export class UserService {
         departmentName: person.departmentName || null,
         position: person.position || null,
         avatar: person.avatar || null,
-        role: nextRole,
         status: "ACTIVE"
       }
+    });
+    await this.ensureRole(user.id, "EMPLOYEE");
+    await this.ensureRole(user.id, role);
+    return this.prisma.user.findUniqueOrThrow({ where: { id: user.id }, include: userInclude });
+  }
+
+  private async upsertDirectoryUser(person: DingTalkSelectableUser, existing: UserWithRoles | null) {
+    const user = await this.prisma.user.upsert({
+      where: { dingtalkUserId: person.dingtalkUserId },
+      update: {
+        name: person.name,
+        mobile: person.mobile || null,
+        departmentId: person.departmentId || null,
+        departmentName: person.departmentName || null,
+        position: person.position || null,
+        avatar: person.avatar || null,
+        status: "ACTIVE"
+      },
+      create: {
+        dingtalkUserId: person.dingtalkUserId,
+        name: person.name,
+        mobile: person.mobile || null,
+        departmentId: person.departmentId || null,
+        departmentName: person.departmentName || null,
+        position: person.position || null,
+        avatar: person.avatar || null,
+        status: existing?.status || "ACTIVE"
+      }
+    });
+    await this.ensureRole(user.id, "EMPLOYEE");
+    return this.prisma.user.findUniqueOrThrow({ where: { id: user.id }, include: userInclude });
+  }
+
+  private async ensureRole(userId: string, role: UserRole) {
+    await this.prisma.userRoleAssignment.upsert({
+      where: { userId_role: { userId, role } },
+      update: {},
+      create: { userId, role }
     });
   }
 

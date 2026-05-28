@@ -4,6 +4,50 @@ import { ticketCategorySeeds } from "../src/lib/labels";
 
 const prisma = new PrismaClient();
 
+type SeedUser = {
+  dingtalkUserId: string;
+  name: string;
+  mobile?: string;
+  departmentId?: string;
+  departmentName?: string;
+  position?: string;
+};
+
+async function assignRoles(userId: string, roles: UserRole[]) {
+  for (const role of roles) {
+    await prisma.userRoleAssignment.upsert({
+      where: { userId_role: { userId, role } },
+      update: {},
+      create: { userId, role }
+    });
+  }
+}
+
+async function upsertSeedUser(input: SeedUser, roles: UserRole[]) {
+  const user = await prisma.user.upsert({
+    where: { dingtalkUserId: input.dingtalkUserId },
+    update: {
+      name: input.name,
+      mobile: input.mobile || null,
+      departmentId: input.departmentId || null,
+      departmentName: input.departmentName || null,
+      position: input.position || null,
+      status: "ACTIVE"
+    },
+    create: {
+      dingtalkUserId: input.dingtalkUserId,
+      name: input.name,
+      mobile: input.mobile || null,
+      departmentId: input.departmentId || null,
+      departmentName: input.departmentName || null,
+      position: input.position || null,
+      status: "ACTIVE"
+    }
+  });
+  await assignRoles(user.id, [UserRole.EMPLOYEE, ...roles]);
+  return user;
+}
+
 async function main() {
   // 中文注释：正式环境可关闭演示账号，避免上线后出现测试用户和测试处理人。
   const includeDemoData = process.env.INCLUDE_DEMO_DATA !== "false";
@@ -11,64 +55,54 @@ async function main() {
   const defaultHandlerName = process.env.DEFAULT_HANDLER_NAME || (includeDemoData ? "李四" : null);
 
   if (includeDemoData) {
-    await prisma.user.upsert({
-      where: { dingtalkUserId: "demo-employee" },
-      update: {},
-      create: {
+    await upsertSeedUser(
+      {
         dingtalkUserId: "demo-employee",
         name: "张三",
         mobile: "13800000001",
         departmentId: "dept-rd",
         departmentName: "研发部",
-        position: "产品经理",
-        role: UserRole.EMPLOYEE
-      }
-    });
+        position: "产品经理"
+      },
+      []
+    );
 
-    await prisma.user.upsert({
-      where: { dingtalkUserId: "demo-handler" },
-      update: {},
-      create: {
+    await upsertSeedUser(
+      {
         dingtalkUserId: "demo-handler",
         name: "李四",
         mobile: "13800000002",
         departmentId: "dept-it",
         departmentName: "信息技术部",
-        position: "IT工程师",
-        role: UserRole.IT_HANDLER
-      }
-    });
+        position: "IT工程师"
+      },
+      [UserRole.IT_HANDLER]
+    );
 
-    await prisma.user.upsert({
-      where: { dingtalkUserId: "demo-admin" },
-      update: {},
-      create: {
+    await upsertSeedUser(
+      {
         dingtalkUserId: "demo-admin",
         name: "王五",
         mobile: "13800000003",
         departmentId: "dept-it",
         departmentName: "信息技术部",
-        position: "IT管理员",
-        role: UserRole.IT_ADMIN
-      }
-    });
+        position: "超级管理员"
+      },
+      [UserRole.SUPER_ADMIN]
+    );
   }
 
-  await prisma.user.upsert({
-    where: { dingtalkUserId: process.env.DEV_DINGTALK_USER_ID || "demo-super" },
-    update: {
-      role: UserRole.SUPER_ADMIN
-    },
-    create: {
+  await upsertSeedUser(
+    {
       dingtalkUserId: process.env.DEV_DINGTALK_USER_ID || "demo-super",
       name: process.env.DEV_USER_NAME || "超级管理员",
       mobile: process.env.DEV_USER_MOBILE || "13800000000",
       departmentId: process.env.DEV_USER_DEPARTMENT_ID || "dept-it",
       departmentName: process.env.DEV_USER_DEPARTMENT_NAME || "信息技术部",
-      position: process.env.DEV_USER_POSITION || "IT负责人",
-      role: UserRole.SUPER_ADMIN
-    }
-  });
+      position: process.env.DEV_USER_POSITION || "IT负责人"
+    },
+    [UserRole.SUPER_ADMIN]
+  );
 
   for (const item of ticketCategorySeeds) {
     await prisma.ticketCategory.upsert({
@@ -90,22 +124,12 @@ async function main() {
   }
 
   await prisma.systemConfig.upsert({
-    where: { configKey: "AUTO_CLOSE_WAITING_CONFIRM_HOURS" },
-    update: { configValue: process.env.AUTO_CLOSE_WAITING_CONFIRM_HOURS || "48" },
+    where: { configKey: "SLA_DUE_SOON_MINUTES" },
+    update: { configValue: process.env.SLA_DUE_SOON_MINUTES || "120" },
     create: {
-      configKey: "AUTO_CLOSE_WAITING_CONFIRM_HOURS",
-      configValue: process.env.AUTO_CLOSE_WAITING_CONFIRM_HOURS || "48",
-      description: "待申请人确认状态超过指定小时数后可自动关闭"
-    }
-  });
-
-  await prisma.systemConfig.upsert({
-    where: { configKey: "AUTO_CLOSE_AFTER_CONFIRM" },
-    update: { configValue: process.env.AUTO_CLOSE_AFTER_CONFIRM || "true" },
-    create: {
-      configKey: "AUTO_CLOSE_AFTER_CONFIRM",
-      configValue: process.env.AUTO_CLOSE_AFTER_CONFIRM || "true",
-      description: "申请人确认完成后是否立即自动关闭"
+      configKey: "SLA_DUE_SOON_MINUTES",
+      configValue: process.env.SLA_DUE_SOON_MINUTES || "120",
+      description: "SLA 截止前多少分钟发送即将超时通知"
     }
   });
 }

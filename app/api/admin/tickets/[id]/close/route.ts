@@ -8,10 +8,13 @@ export async function POST(request: Request, context: { params: Promise<{ id: st
   try {
     const user = await getCurrentUser(request);
     // 中文注释：后台关闭工单属于管理员后台能力，路由层先做管理员权限校验。
-    requireRole(user, ["IT_ADMIN", "SUPER_ADMIN"]);
+    requireRole(user, ["SUPER_ADMIN"]);
     const { id } = await context.params;
-    const body = await parseJson<{ remark?: string }>(request);
+    const body = await parseJson<{ remark?: string; silentDelete?: boolean }>(request);
     const service = new TicketService();
+    if (body.silentDelete) {
+      return ok(await service.silentDelete(id, user));
+    }
     return ok(await service.close(id, user, body.remark));
   } catch (error) {
     return fail(error);

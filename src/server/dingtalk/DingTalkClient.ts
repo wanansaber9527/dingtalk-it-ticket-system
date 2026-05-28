@@ -161,7 +161,7 @@ export class DingTalkClient {
   async listUsers(keyword?: string) {
     if (this.mockEnabled) {
       return [
-        { dingtalkUserId: "demo-admin", name: "王五", departmentName: "信息技术部", position: "IT管理员" },
+        { dingtalkUserId: "demo-admin", name: "王五", departmentName: "信息技术部", position: "超级管理员" },
         { dingtalkUserId: "demo-handler", name: "李四", departmentName: "信息技术部", position: "IT工程师" }
       ] satisfies DingTalkSelectableUser[];
     }

@@ -1,8 +1,9 @@
 // 中文注释：业务服务层，封装工单系统核心业务规则和数据操作。
-import type { PrismaClient, User } from "@prisma/client";
+import type { PrismaClient } from "@prisma/client";
 import { prisma as defaultPrisma } from "@/src/lib/prisma";
 import { AppError } from "@/src/lib/http";
 import { requireRole } from "@/src/server/permissions";
+import type { UserWithRoles } from "@/src/lib/userRoles";
 
 export type CategoryInput = {
   name: string;
@@ -25,8 +26,8 @@ export class CategoryService {
     });
   }
 
-  async create(input: CategoryInput, operator: User) {
-    requireRole(operator, ["IT_ADMIN", "SUPER_ADMIN"]);
+  async create(input: CategoryInput, operator: UserWithRoles) {
+    requireRole(operator, ["SUPER_ADMIN"]);
     const handler = input.defaultHandlerUserId
       ? await this.prisma.user.findUnique({ where: { dingtalkUserId: input.defaultHandlerUserId } })
       : null;
@@ -48,8 +49,8 @@ export class CategoryService {
     });
   }
 
-  async update(id: string, input: CategoryInput, operator: User) {
-    requireRole(operator, ["IT_ADMIN", "SUPER_ADMIN"]);
+  async update(id: string, input: CategoryInput, operator: UserWithRoles) {
+    requireRole(operator, ["SUPER_ADMIN"]);
     const handler = input.defaultHandlerUserId
       ? await this.prisma.user.findUnique({ where: { dingtalkUserId: input.defaultHandlerUserId } })
       : null;
@@ -72,8 +73,8 @@ export class CategoryService {
     });
   }
 
-  async delete(id: string, operator: User) {
-    requireRole(operator, ["IT_ADMIN", "SUPER_ADMIN"]);
+  async delete(id: string, operator: UserWithRoles) {
+    requireRole(operator, ["SUPER_ADMIN"]);
     const category = await this.prisma.ticketCategory.findUnique({ where: { id } });
     if (!category) {
       throw new AppError(404, "CATEGORY_NOT_FOUND", "分类不存在");

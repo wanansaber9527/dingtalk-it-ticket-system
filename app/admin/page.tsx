@@ -51,7 +51,7 @@ export default function AdminDashboardPage() {
         <Typography.Title level={3} style={{ margin: 0 }}>
           首页看板
         </Typography.Title>
-        <div className="muted">IT工单处理概览、SLA与满意度趋势</div>
+        <div className="muted">工单处理概览、SLA与满意度趋势</div>
       </div>
 
       <div className="metric-grid">

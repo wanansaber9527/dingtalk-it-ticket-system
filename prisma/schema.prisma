@@ -11,7 +11,6 @@ datasource db {
 enum UserRole {
   EMPLOYEE
   IT_HANDLER
-  IT_ADMIN
   SUPER_ADMIN
 }
 
@@ -31,7 +30,6 @@ enum TicketStatus {
   PENDING
   ASSIGNED
   PROCESSING
-  WAITING_CONFIRM
   COMPLETED
   CLOSED
   REJECTED
@@ -74,6 +72,8 @@ enum NotificationType {
   TICKET_ASSIGNED
   STATUS_UPDATED
   TICKET_RESOLVED
+  TICKET_FIRST_RESPONSE_DUE_SOON
+  TICKET_RESOLVE_DUE_SOON
   TICKET_OVERDUE
   UNSATISFIED_REVIEW
 }
@@ -110,13 +110,25 @@ model User {
   departmentName    String?
   position          String?
   avatar            String?    @db.Text
-  role              UserRole   @default(EMPLOYEE)
   status            UserStatus @default(ACTIVE)
   createdAt         DateTime   @default(now())
   updatedAt         DateTime   @updatedAt
 
   applicantTickets  Ticket[]   @relation("ApplicantTickets")
   handlerTickets    Ticket[]   @relation("HandlerTickets")
+  roleAssignments   UserRoleAssignment[]
+}
+
+model UserRoleAssignment {
+  id        String   @id @default(cuid())
+  userId    String
+  role      UserRole
+  createdAt DateTime @default(now())
+
+  user      User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@unique([userId, role])
+  @@index([role])
 }
 
 model Ticket {

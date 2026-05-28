@@ -8,7 +8,7 @@ import { DingTalkAiTableClient } from "@/src/server/dingtalk/DingTalkAiTableClie
 export async function POST(request: Request, context: { params: Promise<{ id: string }> }) {
   try {
     const user = await getCurrentUser(request);
-    requireRole(user, ["IT_ADMIN", "SUPER_ADMIN"]);
+    requireRole(user, ["SUPER_ADMIN"]);
     const { id } = await context.params;
     const ticket = await prisma.ticket.findUniqueOrThrow({ where: { id } });
     const client = new DingTalkAiTableClient();

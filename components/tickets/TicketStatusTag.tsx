@@ -10,7 +10,6 @@ const colors: Record<TicketStatus, string> = {
   PENDING: "geekblue",
   ASSIGNED: "blue",
   PROCESSING: "blue",
-  WAITING_CONFIRM: "processing",
   COMPLETED: "success",
   CLOSED: "default",
   REJECTED: "error",

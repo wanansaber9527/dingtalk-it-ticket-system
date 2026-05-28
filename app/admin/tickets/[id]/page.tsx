@@ -3,8 +3,8 @@
 // 中文注释：管理员后台页面，展示和操作 IT 工单系统管理能力。
 
 import { useEffect, useState } from "react";
-import { useParams } from "next/navigation";
-import { Button, Card, Col, Descriptions, Form, Input, Row, Select, Space, Switch, Timeline, Typography, message } from "antd";
+import { useParams, useRouter } from "next/navigation";
+import { Button, Card, Checkbox, Col, Descriptions, Form, Image, Input, Row, Select, Space, Switch, Timeline, Typography, message } from "antd";
 import {
   CheckCircleOutlined,
   CommentOutlined,
@@ -16,8 +16,13 @@ import {
 import { TicketStatusTag } from "@/components/tickets/TicketStatusTag";
 import { actionTypeLabels, priorityLabels, ticketStatusLabels } from "@/src/lib/labels";
 import { apiGet, apiPost } from "@/src/lib/clientApi";
+import { attachmentDisplayUrl, parseTicketAttachments } from "@/src/lib/attachments";
+import { hasUserRole } from "@/src/lib/userRoles";
 
 type Handler = { dingtalkUserId: string; name: string };
+type CurrentUser = {
+  roleAssignments: { role: "EMPLOYEE" | "IT_HANDLER" | "SUPER_ADMIN" }[];
+};
 type Log = {
   id: string;
   operatorName: string;
@@ -38,6 +43,7 @@ type Ticket = {
   handlerUserId?: string;
   handlerName?: string;
   description: string;
+  attachments?: string;
   resultSummary?: string;
   satisfactionLevel?: string;
   satisfactionComment?: string;
@@ -51,9 +57,12 @@ type Ticket = {
 
 export default function AdminTicketDetailPage() {
   const params = useParams<{ id: string }>();
+  const router = useRouter();
   const [ticket, setTicket] = useState<Ticket | null>(null);
+  const [me, setMe] = useState<CurrentUser | null>(null);
   const [handlers, setHandlers] = useState<Handler[]>([]);
   const [loading, setLoading] = useState(false);
+  const [silentDelete, setSilentDelete] = useState(false);
   const [assignForm] = Form.useForm();
   const [statusForm] = Form.useForm();
   const [resolveForm] = Form.useForm();
@@ -75,8 +84,11 @@ export default function AdminTicketDetailPage() {
 
   useEffect(() => {
     load();
+    apiGet<CurrentUser>("/api/me").then(setMe).catch(() => setMe(null));
     apiGet<Handler[]>("/api/admin/users?role=handlers").then(setHandlers).catch(() => null);
   }, [params.id]);
+
+  const isSuperAdmin = me ? hasUserRole(me, ["SUPER_ADMIN"]) : false;
 
   async function run(url: string, body?: unknown) {
     try {
@@ -86,6 +98,24 @@ export default function AdminTicketDetailPage() {
       statusForm.resetFields();
       resolveForm.resetFields();
       commentForm.resetFields();
+      load();
+    } catch (error) {
+      message.error(error instanceof Error ? error.message : "操作失败");
+    }
+  }
+
+  async function closeTicket() {
+    if (!ticket) return;
+    try {
+      await apiPost(`/api/admin/tickets/${ticket.id}/close`, {
+        remark: "管理员关闭",
+        silentDelete: isSuperAdmin && silentDelete
+      });
+      message.success(silentDelete ? "已静默删除" : "操作成功");
+      if (silentDelete) {
+        router.push("/admin/tickets");
+        return;
+      }
       load();
     } catch (error) {
       message.error(error instanceof Error ? error.message : "操作失败");
@@ -103,6 +133,10 @@ export default function AdminTicketDetailPage() {
 
       {ticket && (
         <>
+          {(() => {
+            const attachments = parseTicketAttachments(ticket.attachments);
+            return (
+              <>
           <Card loading={loading}>
             <Descriptions column={{ xs: 1, md: 2, xl: 3 }} bordered size="small">
               <Descriptions.Item label="工单编号">{ticket.ticketNo}</Descriptions.Item>
@@ -126,6 +160,26 @@ export default function AdminTicketDetailPage() {
               <Descriptions.Item label="问题描述" span={3}>
                 <div className="timeline-note">{ticket.description}</div>
               </Descriptions.Item>
+              <Descriptions.Item label="问题截图" span={3}>
+                {attachments.length ? (
+                  <Image.PreviewGroup>
+                    <Space wrap className="attachment-preview-grid">
+                      {attachments.map((item) => (
+                        <Image
+                          key={item.url}
+                          src={attachmentDisplayUrl(item.url)}
+                          alt={item.name}
+                          width={96}
+                          height={96}
+                          style={{ objectFit: "cover", borderRadius: 10 }}
+                        />
+                      ))}
+                    </Space>
+                  </Image.PreviewGroup>
+                ) : (
+                  "-"
+                )}
+              </Descriptions.Item>
               <Descriptions.Item label="处理结果" span={3}>
                 <div className="timeline-note">{ticket.resultSummary || "-"}</div>
               </Descriptions.Item>
@@ -146,10 +200,12 @@ export default function AdminTicketDetailPage() {
                     <Input placeholder="备注" />
                   </Form.Item>
                   <Space>
-                    <Button type="primary" htmlType="submit" icon={<SendOutlined />}>
-                      分派
-                    </Button>
-                    <Button icon={<SwapOutlined />} onClick={() => run(`/api/admin/tickets/${ticket.id}/transfer`, assignForm.getFieldsValue())}>
+                    {isSuperAdmin && (
+                      <Button type="primary" htmlType="submit" icon={<SendOutlined />}>
+                        分派
+                      </Button>
+                    )}
+                    <Button icon={<SwapOutlined />} onClick={() => run(`/api/tickets/${ticket.id}/transfer`, assignForm.getFieldsValue())}>
                       转交
                     </Button>
                   </Space>
@@ -158,7 +214,7 @@ export default function AdminTicketDetailPage() {
             </Col>
             <Col xs={24} xl={12}>
               <Card title="状态处理">
-                <Form form={statusForm} layout="inline" onFinish={(values) => run(`/api/admin/tickets/${ticket.id}/status`, values)}>
+                <Form form={statusForm} layout="inline" onFinish={(values) => run(`/api/tickets/${ticket.id}/status`, values)}>
                   <Form.Item name="status" rules={[{ required: true }]} style={{ minWidth: 220 }}>
                     <Select options={Object.entries(ticketStatusLabels).map(([value, label]) => ({ value, label }))} />
                   </Form.Item>
@@ -176,7 +232,7 @@ export default function AdminTicketDetailPage() {
                 <Form
                   form={resolveForm}
                   layout="vertical"
-                  onFinish={(values) => run(`/api/admin/tickets/${ticket.id}/resolve`, values)}
+                  onFinish={(values) => run(`/api/tickets/${ticket.id}/resolve`, values)}
                 >
                   <Form.Item name="resultSummary" label="处理结果" rules={[{ required: true, message: "请填写处理结果" }]}>
                     <Input.TextArea rows={4} />
@@ -204,12 +260,21 @@ export default function AdminTicketDetailPage() {
                     <Button htmlType="submit" icon={<CommentOutlined />}>
                       添加备注
                     </Button>
-                    <Button icon={<SyncOutlined />} onClick={() => run(`/api/admin/tickets/${ticket.id}/sync-ai-table`)}>
-                      重新同步AI表格
-                    </Button>
-                    <Button danger icon={<ReloadOutlined />} onClick={() => run(`/api/admin/tickets/${ticket.id}/close`, { remark: "管理员关闭" })}>
-                      关闭工单
-                    </Button>
+                    {isSuperAdmin && (
+                      <>
+                        <Button icon={<SyncOutlined />} onClick={() => run(`/api/admin/tickets/${ticket.id}/sync-ai-table`)}>
+                          重新同步AI表格
+                        </Button>
+                        <Space size={8} wrap>
+                          <Checkbox checked={silentDelete} onChange={(event) => setSilentDelete(event.target.checked)}>
+                            静默删除
+                          </Checkbox>
+                          <Button danger icon={<ReloadOutlined />} onClick={closeTicket}>
+                            关闭工单
+                          </Button>
+                        </Space>
+                      </>
+                    )}
                   </Space>
                 </Form>
               </Card>
@@ -231,6 +296,9 @@ export default function AdminTicketDetailPage() {
               }))}
             />
           </Card>
+              </>
+            );
+          })()}
         </>
       )}
     </Space>

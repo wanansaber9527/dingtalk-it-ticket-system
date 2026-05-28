@@ -17,7 +17,7 @@ export async function GET(request: Request) {
     if (url.searchParams.get("role") === "executors") {
       return ok(await service.executors(user));
     }
-    return ok(await service.list(user));
+    return ok(await service.list(user, url.searchParams.get("keyword") || undefined));
   } catch (error) {
     return fail(error);
   }

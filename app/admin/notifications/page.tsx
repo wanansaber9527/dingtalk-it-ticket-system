@@ -6,7 +6,7 @@ import { useEffect, useState } from "react";
 import { Button, Space, Table, Typography, message } from "antd";
 import { ReloadOutlined, SendOutlined } from "@ant-design/icons";
 import { apiGet, apiPost } from "@/src/lib/clientApi";
-import { sendStatusLabels } from "@/src/lib/labels";
+import { notificationTypeLabels, sendStatusLabels } from "@/src/lib/labels";
 
 type Notification = {
   id: string;
@@ -59,7 +59,12 @@ export default function NotificationsPage() {
           columns={[
             { title: "工单编号", dataIndex: "ticketNo", width: 150, render: (value) => value || "-" },
             { title: "接收人", dataIndex: "receiverName", width: 120 },
-            { title: "类型", dataIndex: "notificationType", width: 160 },
+            {
+              title: "类型",
+              dataIndex: "notificationType",
+              width: 160,
+              render: (value) => notificationTypeLabels[value as keyof typeof notificationTypeLabels] || value
+            },
             { title: "内容", dataIndex: "content", width: 320 },
             { title: "状态", dataIndex: "sendStatus", width: 100, render: (value) => sendStatusLabels[value as keyof typeof sendStatusLabels] },
             { title: "失败原因", dataIndex: "errorMessage", width: 240, render: (value) => value || "-" },

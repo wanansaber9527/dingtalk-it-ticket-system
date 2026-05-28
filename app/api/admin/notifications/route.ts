@@ -7,7 +7,7 @@ import { requireRole } from "@/src/server/permissions";
 export async function GET(request: Request) {
   try {
     const user = await getCurrentUser(request);
-    requireRole(user, ["IT_ADMIN", "SUPER_ADMIN"]);
+    requireRole(user, ["SUPER_ADMIN"]);
     const items = await prisma.notification.findMany({
       orderBy: { createdAt: "desc" },
       take: 200

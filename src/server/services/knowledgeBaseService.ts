@@ -1,7 +1,8 @@
 // 中文注释：业务服务层，封装工单系统核心业务规则和数据操作。
-import type { KnowledgeBase, PrismaClient, User } from "@prisma/client";
+import type { KnowledgeBase, PrismaClient } from "@prisma/client";
 import { prisma as defaultPrisma } from "@/src/lib/prisma";
 import { requireRole } from "@/src/server/permissions";
+import type { UserWithRoles } from "@/src/lib/userRoles";
 import { DingTalkAiTableClient } from "@/src/server/dingtalk/DingTalkAiTableClient";
 
 export type KnowledgeBaseInput = {
@@ -66,8 +67,8 @@ export class KnowledgeBaseService {
     });
   }
 
-  async create(input: KnowledgeBaseInput, operator: User) {
-    requireRole(operator, ["IT_HANDLER", "IT_ADMIN", "SUPER_ADMIN"]);
+  async create(input: KnowledgeBaseInput, operator: UserWithRoles) {
+    requireRole(operator, ["IT_HANDLER", "SUPER_ADMIN"]);
     const category = input.categoryId
       ? await this.prisma.ticketCategory.findUnique({ where: { id: input.categoryId } })
       : null;
@@ -95,8 +96,8 @@ export class KnowledgeBaseService {
     return kb;
   }
 
-  async update(id: string, input: KnowledgeBaseInput, operator: User) {
-    requireRole(operator, ["IT_ADMIN", "SUPER_ADMIN"]);
+  async update(id: string, input: KnowledgeBaseInput, operator: UserWithRoles) {
+    requireRole(operator, ["SUPER_ADMIN"]);
     const existing = await this.prisma.knowledgeBase.findUniqueOrThrow({ where: { id } });
     const category = input.categoryId
       ? await this.prisma.ticketCategory.findUnique({ where: { id: input.categoryId } })

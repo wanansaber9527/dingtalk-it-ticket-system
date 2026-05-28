@@ -4,12 +4,14 @@
 
 import Link from "next/link";
 import { usePathname } from "next/navigation";
+import type { CSSProperties } from "react";
 import { useEffect, useMemo, useState } from "react";
-import { BookOutlined, FormOutlined, ProfileOutlined, SettingOutlined } from "@ant-design/icons";
+import { BookOutlined, FormOutlined, ProfileOutlined, SettingOutlined, ToolOutlined } from "@ant-design/icons";
 import { apiGet } from "@/src/lib/clientApi";
+import { hasUserRole } from "@/src/lib/userRoles";
 
 type CurrentUser = {
-  role: "EMPLOYEE" | "IT_HANDLER" | "IT_ADMIN" | "SUPER_ADMIN";
+  roleAssignments: { role: "EMPLOYEE" | "IT_HANDLER" | "SUPER_ADMIN" }[];
 };
 
 const baseNav = [
@@ -33,7 +35,10 @@ export function EmployeeShell({ title, children }: { title: string; children: Re
 
   const nav = useMemo(() => {
     const items = [...baseNav];
-    if (isDingTalkBrowser() && me && ["IT_ADMIN", "SUPER_ADMIN"].includes(me.role)) {
+    if (me && hasUserRole(me, ["IT_HANDLER"])) {
+      items.push({ href: "/handler/tickets", label: "处理", icon: <ToolOutlined /> });
+    }
+    if (isDingTalkBrowser() && me && hasUserRole(me, ["SUPER_ADMIN"])) {
       items.push({ href: "/admin", label: "后台", icon: <SettingOutlined /> });
     }
     return items;
@@ -45,12 +50,12 @@ export function EmployeeShell({ title, children }: { title: string; children: Re
         <div>
           <div className="mobile-title">{title}</div>
           <div className="muted" style={{ fontSize: 12 }}>
-            钉钉IT工单系统
+            趣然工单系统
           </div>
         </div>
       </header>
       <section className="mobile-content">{children}</section>
-      <nav className="mobile-nav">
+      <nav className="mobile-nav" style={{ "--nav-count": nav.length } as CSSProperties}>
         {nav.map((item) => (
           <Link key={item.href} href={item.href} className={pathname.startsWith(item.href) ? "active" : ""}>
             {item.icon}

@@ -31,12 +31,19 @@ export class DingTalkAuthService {
         departmentId: department.departmentId || null,
         departmentName: department.departmentName || null,
         position: detail.position || detail.title || null,
-        avatar: detail.avatar || null,
-        role: "EMPLOYEE"
+        avatar: detail.avatar || null
       }
     });
+    await this.prisma.userRoleAssignment.upsert({
+      where: { userId_role: { userId: user.id, role: "EMPLOYEE" } },
+      update: {},
+      create: { userId: user.id, role: "EMPLOYEE" }
+    });
 
-    return user;
+    return this.prisma.user.findUniqueOrThrow({
+      where: { id: user.id },
+      include: { roleAssignments: true }
+    });
   }
 
   private async getSafeDepartmentInfo(detail: Awaited<ReturnType<DingTalkClient["getUserDetail"]>>) {

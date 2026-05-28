@@ -4,6 +4,7 @@ import type {
   SatisfactionLevel,
   SendStatus,
   TicketActionType,
+  NotificationType,
   TicketPriority,
   TicketStatus,
   UserRole,
@@ -13,7 +14,6 @@ import type {
 export const roleLabels: Record<UserRole, string> = {
   EMPLOYEE: "普通员工",
   IT_HANDLER: "IT处理人",
-  IT_ADMIN: "IT管理员",
   SUPER_ADMIN: "超级管理员"
 };
 
@@ -33,7 +33,6 @@ export const ticketStatusLabels: Record<TicketStatus, string> = {
   PENDING: "待受理",
   ASSIGNED: "已分派",
   PROCESSING: "处理中",
-  WAITING_CONFIRM: "待申请人确认",
   COMPLETED: "已完成",
   CLOSED: "已关闭",
   REJECTED: "已驳回",
@@ -74,6 +73,18 @@ export const sendStatusLabels: Record<SendStatus, string> = {
   PENDING: "待发送",
   SUCCESS: "成功",
   FAILED: "失败"
+};
+
+export const notificationTypeLabels: Record<NotificationType, string> = {
+  TICKET_CREATED: "工单提交成功",
+  NEW_TICKET_PENDING: "新工单待处理",
+  TICKET_ASSIGNED: "工单分派",
+  STATUS_UPDATED: "状态更新",
+  TICKET_RESOLVED: "工单处理完成",
+  TICKET_FIRST_RESPONSE_DUE_SOON: "首响即将超时",
+  TICKET_RESOLVE_DUE_SOON: "处理即将超时",
+  TICKET_OVERDUE: "工单已超时",
+  UNSATISFIED_REVIEW: "不满意评价"
 };
 
 export const ticketCategorySeeds = [

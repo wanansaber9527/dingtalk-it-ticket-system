@@ -17,11 +17,12 @@ import Link from "next/link";
 import { usePathname } from "next/navigation";
 import { useEffect, useState } from "react";
 import { apiGet } from "@/src/lib/clientApi";
+import { hasUserRole } from "@/src/lib/userRoles";
 
 const { Sider, Content } = Layout;
 
 type CurrentUser = {
-  role: "EMPLOYEE" | "IT_HANDLER" | "IT_ADMIN" | "SUPER_ADMIN";
+  roleAssignments: { role: "EMPLOYEE" | "IT_HANDLER" | "SUPER_ADMIN" }[];
 };
 
 const items = [
@@ -54,22 +55,25 @@ export function AdminShell({ children }: { children: React.ReactNode }) {
       .finally(() => setLoading(false));
   }, []);
 
-  const allowed = me && ["IT_ADMIN", "SUPER_ADMIN"].includes(me.role);
+  const isSuperAdmin = me ? hasUserRole(me, ["SUPER_ADMIN"]) : false;
+  const isHandler = me ? hasUserRole(me, ["IT_HANDLER"]) : false;
+  const visibleItems = isSuperAdmin ? items : items.filter((item) => ["/admin/tickets", "/tickets/new"].includes(item.key));
+  const allowed = Boolean(isSuperAdmin || (isHandler && pathname.startsWith("/admin/tickets")));
 
   return (
     <Layout className="page-shell">
-      <Sider width={236} breakpoint="lg" collapsedWidth={0} className="admin-sider">
+      <Sider width={236} className="admin-sider">
         <div className="admin-brand">
           <Typography.Text strong className="admin-brand-title">
-            钉钉IT工单
+            趣然工单系统
           </Typography.Text>
           <div className="muted" style={{ marginTop: 4, fontSize: 12 }}>
             管理后台
           </div>
         </div>
-        <Menu mode="inline" selectedKeys={[selectedKey(pathname)]} items={items} style={{ borderInlineEnd: 0, paddingTop: 10 }} />
+        <Menu mode="inline" selectedKeys={[selectedKey(pathname)]} items={visibleItems} style={{ borderInlineEnd: 0, paddingTop: 10 }} />
       </Sider>
-      <Layout>
+      <Layout className="admin-main-layout">
         <Content className="admin-content">
           {loading ? (
             <div className="content-band" style={{ minHeight: 260, display: "grid", placeItems: "center" }}>

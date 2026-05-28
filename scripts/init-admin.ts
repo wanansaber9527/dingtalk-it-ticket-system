@@ -1,5 +1,5 @@
-// 中文注释：本地运维脚本，用于初始化管理员等辅助操作。
-import { PrismaClient, UserRole } from "@prisma/client";
+// 中文注释：本地运维脚本，用于初始化超级管理员。
+import { PrismaClient } from "@prisma/client";
 
 const prisma = new PrismaClient();
 
@@ -9,6 +9,14 @@ function readArg(name: string) {
   if (inline) return inline.slice(prefix.length);
   const index = process.argv.indexOf(`--${name}`);
   return index >= 0 ? process.argv[index + 1] : undefined;
+}
+
+async function ensureRole(userId: string, role: "EMPLOYEE" | "SUPER_ADMIN") {
+  await prisma.userRoleAssignment.upsert({
+    where: { userId_role: { userId, role } },
+    update: {},
+    create: { userId, role }
+  });
 }
 
 async function main() {
@@ -23,16 +31,16 @@ async function main() {
     where: { dingtalkUserId },
     update: {
       name,
-      role: UserRole.SUPER_ADMIN,
       status: "ACTIVE"
     },
     create: {
       dingtalkUserId,
       name,
-      role: UserRole.SUPER_ADMIN,
       status: "ACTIVE"
     }
   });
+  await ensureRole(user.id, "EMPLOYEE");
+  await ensureRole(user.id, "SUPER_ADMIN");
 
   console.log(`初始化超级管理员成功：${user.name} (${user.dingtalkUserId})`);
 }

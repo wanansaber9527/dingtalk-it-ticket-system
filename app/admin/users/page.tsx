@@ -2,11 +2,12 @@
 
 // 中文注释：权限管理页面，维护管理员、执行人员和全部用户角色状态。
 
-import { useEffect, useState } from "react";
-import { Button, Form, Input, Modal, Popconfirm, Select, Space, Table, Tabs, Typography, message } from "antd";
-import { DeleteOutlined, PlusOutlined, SearchOutlined, TeamOutlined } from "@ant-design/icons";
+import { useEffect, useMemo, useState } from "react";
+import { Button, Form, Input, Modal, Popconfirm, Select, Space, Table, Tabs, Tag, Typography, message } from "antd";
+import { DeleteOutlined, PlusOutlined, SearchOutlined, SyncOutlined, TeamOutlined } from "@ant-design/icons";
 import { apiDelete, apiGet, apiPost, apiPut } from "@/src/lib/clientApi";
 import { roleLabels, userStatusLabels } from "@/src/lib/labels";
+import { hasUserRole, userRoles } from "@/src/lib/userRoles";
 
 type User = {
   id: string;
@@ -16,9 +17,21 @@ type User = {
   departmentId?: string;
   departmentName?: string;
   position?: string;
-  role: keyof typeof roleLabels;
+  roleAssignments: { role: keyof typeof roleLabels }[];
   status: keyof typeof userStatusLabels;
   createdAt: string;
+};
+
+type SyncResult = {
+  total: number;
+  createdCount: number;
+  updatedCount: number;
+  removedCount: number;
+  failedCount: number;
+  created: Pick<User, "dingtalkUserId" | "name" | "departmentName">[];
+  updated: Pick<User, "dingtalkUserId" | "name" | "departmentName">[];
+  removed: Pick<User, "dingtalkUserId" | "name" | "departmentName">[];
+  failed: Array<Pick<User, "dingtalkUserId" | "name" | "departmentName"> & { reason: string }>;
 };
 
 type DingTalkPerson = {
@@ -43,6 +56,7 @@ export default function UsersPage() {
   const [people, setPeople] = useState<DingTalkPerson[]>([]);
   const [peopleLoading, setPeopleLoading] = useState(false);
   const [currentUser, setCurrentUser] = useState<User | null>(null);
+  const [allKeyword, setAllKeyword] = useState("");
   const [form] = Form.useForm();
 
   const load = () => {
@@ -64,11 +78,21 @@ export default function UsersPage() {
   useEffect(load, []);
 
   // 中文注释：角色和人员维护属于超级管理员能力，普通管理员可以查看但不能修改。
-  const canManagePersonnel = currentUser?.role === "SUPER_ADMIN";
+  const canManagePersonnel = currentUser ? hasUserRole(currentUser, ["SUPER_ADMIN"]) : false;
+
+  const filteredItems = useMemo(() => {
+    const keyword = allKeyword.trim().toLowerCase();
+    if (!keyword) return items;
+    return items.filter((item) =>
+      [item.name, item.dingtalkUserId, item.departmentName, item.position, item.mobile]
+        .filter(Boolean)
+        .some((value) => String(value).toLowerCase().includes(keyword))
+    );
+  }, [allKeyword, items]);
 
   function showAdd(nextMode: AddMode) {
     if (!canManagePersonnel) {
-      message.warning("仅超级管理员可以维护管理员和执行人员");
+      message.warning("仅超级管理员可以维护超级管理员和执行人员");
       return;
     }
     setMode(nextMode);
@@ -76,9 +100,9 @@ export default function UsersPage() {
     form.resetFields();
   }
 
-  async function update(user: User, patch: Partial<Pick<User, "role" | "status">>) {
+  async function update(user: User, patch: Partial<Pick<User, "status">>) {
     try {
-      await apiPut(`/api/admin/users/${user.id}/role`, { role: patch.role || user.role, status: patch.status || user.status });
+      await apiPut(`/api/admin/users/${user.id}/role`, { status: patch.status || user.status });
       message.success("已更新");
       load();
     } catch (error) {
@@ -89,7 +113,7 @@ export default function UsersPage() {
   async function submit(values: DingTalkPerson) {
     try {
       await apiPost(mode === "admin" ? "/api/admin/users/admins" : "/api/admin/users/handlers", values);
-      message.success(mode === "admin" ? "管理员已添加" : "执行人员已添加");
+      message.success(mode === "admin" ? "超级管理员已添加" : "执行人员已添加");
       setOpen(false);
       load();
     } catch (error) {
@@ -120,6 +144,62 @@ export default function UsersPage() {
     }
   }
 
+  async function syncDirectory() {
+    setSyncLoading(true);
+    try {
+      const result = await apiPost<SyncResult>("/api/admin/users/sync-dingtalk");
+      const renderPeople = (people: Pick<User, "dingtalkUserId" | "name" | "departmentName">[]) =>
+        people.length
+          ? people.map((item) => `${item.name}（${item.departmentName || "-"} / ${item.dingtalkUserId}）`).join("、")
+          : "无";
+      Modal.success({
+        title: "同步完成",
+        width: 760,
+        content: (
+          <Space direction="vertical" size={12} style={{ width: "100%" }}>
+            <Typography.Text>
+              钉钉成员 {result.total} 人，新增 {result.createdCount} 人，更新 {result.updatedCount} 人，停用 {result.removedCount} 人，失败{" "}
+              {result.failedCount} 人。
+            </Typography.Text>
+            <div className="sync-result-block">
+              <Typography.Text strong>本次新增</Typography.Text>
+              <div className="muted" style={{ marginTop: 4 }}>
+                {renderPeople(result.created)}
+              </div>
+            </div>
+            <div className="sync-result-block">
+              <Typography.Text strong>本次更新</Typography.Text>
+              <div className="muted" style={{ marginTop: 4 }}>
+                {renderPeople(result.updated)}
+              </div>
+            </div>
+            <div className="sync-result-block">
+              <Typography.Text strong>本次删除/停用</Typography.Text>
+              <div className="muted" style={{ marginTop: 4 }}>
+                {renderPeople(result.removed)}
+              </div>
+            </div>
+            <div className="sync-result-block">
+              <Typography.Text strong type={result.failedCount ? "danger" : undefined}>
+                同步失败
+              </Typography.Text>
+              <div className="muted" style={{ marginTop: 4 }}>
+                {result.failed.length
+                  ? result.failed.map((item) => `${item.name}（${item.dingtalkUserId}）：${item.reason}`).join("；")
+                  : "无"}
+              </div>
+            </div>
+          </Space>
+        )
+      });
+      load();
+    } catch (error) {
+      message.error(error instanceof Error ? error.message : "同步钉钉成员目录失败");
+    } finally {
+      setSyncLoading(false);
+    }
+  }
+
   function choosePerson(person: DingTalkPerson) {
     form.setFieldsValue(person);
     setPickerOpen(false);
@@ -146,17 +226,24 @@ export default function UsersPage() {
     { title: "钉钉UserId", dataIndex: "dingtalkUserId", width: 190 },
     { title: "部门", dataIndex: "departmentName", width: 150, render: (value: string) => value || "-" },
     { title: "岗位", dataIndex: "position", width: 140, render: (value: string) => value || "-" },
-    { title: "角色", dataIndex: "role", width: 130, render: (value: User["role"]) => roleLabels[value] },
+    {
+      title: "身份",
+      width: 180,
+      render: (_: unknown, record: User) => (
+        <Space size={4} wrap>
+          {userRoles(record).map((role) => (
+            <Tag key={role}>{roleLabels[role]}</Tag>
+          ))}
+        </Space>
+      )
+    },
     {
       title: "操作",
       width: 120,
       render: (_: unknown, record: User) => {
-        const protectedSuperAdmin = nextMode === "admin" && record.role === "SUPER_ADMIN";
         if (!canManagePersonnel) return <Typography.Text type="secondary">仅超级管理员可维护</Typography.Text>;
-        return protectedSuperAdmin ? (
-          <Typography.Text type="secondary">受保护</Typography.Text>
-        ) : (
-          <Popconfirm title="确认删除？" description="删除后仅取消对应角色，不会删除历史数据。" onConfirm={() => removeUser(record, nextMode)}>
+        return (
+          <Popconfirm title="确认删除？" description="删除后仅取消对应身份，不会影响其他已有身份。" onConfirm={() => removeUser(record, nextMode)}>
             <Button danger size="small" icon={<DeleteOutlined />}>
               删除
             </Button>
@@ -167,22 +254,20 @@ export default function UsersPage() {
   ];
 
   const allColumns = [
+    { title: "序号", width: 78, render: (_: unknown, __: User, index: number) => index + 1 },
     { title: "姓名", dataIndex: "name", width: 120, fixed: "left" as const },
     { title: "钉钉UserId", dataIndex: "dingtalkUserId", width: 190 },
     { title: "部门", dataIndex: "departmentName", width: 150 },
     { title: "岗位", dataIndex: "position", width: 140 },
     {
-      title: "角色",
-      dataIndex: "role",
-      width: 170,
-      render: (value: User["role"], record: User) => (
-        <Select
-          value={value}
-          style={{ width: 150 }}
-          disabled={!canManagePersonnel}
-          options={Object.entries(roleLabels).map(([role, label]) => ({ value: role, label }))}
-          onChange={(role) => update(record, { role })}
-        />
+      title: "身份",
+      width: 210,
+      render: (_: unknown, record: User) => (
+        <Space size={4} wrap>
+          {userRoles(record).map((role) => (
+            <Tag key={role}>{roleLabels[role]}</Tag>
+          ))}
+        </Space>
       )
     },
     {
@@ -208,7 +293,7 @@ export default function UsersPage() {
         <Typography.Title level={3} style={{ margin: 0 }}>
           权限管理
         </Typography.Title>
-        <div className="muted">维护管理员、执行人员和用户角色，人员信息来自钉钉 userId</div>
+        <div className="muted">维护超级管理员、执行人员和用户身份，人员信息来自钉钉 userId</div>
       </div>
 
       <div className="content-band">
@@ -216,12 +301,12 @@ export default function UsersPage() {
           items={[
             {
               key: "admins",
-              label: "管理员管理",
+              label: "超级管理员",
               children: (
                 <Space direction="vertical" size={12} style={{ width: "100%" }}>
                   {canManagePersonnel ? (
                     <Button type="primary" icon={<PlusOutlined />} onClick={() => showAdd("admin")}>
-                      新增管理员
+                      新增超级管理员
                     </Button>
                   ) : null}
                   <Table rowKey="id" dataSource={admins} columns={roleTableColumns("admin")} scroll={{ x: 900 }} />
@@ -245,13 +330,30 @@ export default function UsersPage() {
             {
               key: "all",
               label: "全部用户",
-              children: <Table rowKey="id" dataSource={items} columns={allColumns} scroll={{ x: 1100 }} />
+              children: (
+                <Space direction="vertical" size={12} style={{ width: "100%" }}>
+                  <Space wrap>
+                    <Input.Search
+                      allowClear
+                      placeholder="搜索姓名、userId、部门、岗位或手机号"
+                      style={{ width: 320 }}
+                      onSearch={setAllKeyword}
+                      onChange={(event) => setAllKeyword(event.target.value)}
+                    />
+                    <Button icon={<SyncOutlined />} loading={syncLoading} onClick={syncDirectory}>
+                      同步钉钉成员目录
+                    </Button>
+                    <Typography.Text type="secondary">当前显示 {filteredItems.length} 人 / 总人数 {items.length} 人。</Typography.Text>
+                  </Space>
+                  <Table rowKey="id" dataSource={filteredItems} columns={allColumns} scroll={{ x: 1180 }} />
+                </Space>
+              )
             }
           ]}
         />
       </div>
 
-      <Modal title={mode === "admin" ? "新增管理员" : "新增执行人员"} open={open} onCancel={() => setOpen(false)} onOk={() => form.submit()} destroyOnClose>
+      <Modal title={mode === "admin" ? "新增超级管理员" : "新增执行人员"} open={open} onCancel={() => setOpen(false)} onOk={() => form.submit()} destroyOnClose>
         <Form form={form} layout="vertical" onFinish={submit}>
           <Form.Item name="dingtalkUserId" label="钉钉 userId" rules={[{ required: true, message: "请填写钉钉 userId" }]}>
             <Input placeholder="手动输入钉钉 userId，或从钉钉选择人员后自动回填" />

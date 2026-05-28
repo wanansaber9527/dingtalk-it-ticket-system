@@ -15,7 +15,7 @@ export async function POST(request: Request) {
         null,
         { dingtalkUserId: body.receiverUserId || user.dingtalkUserId, name: body.receiverName || user.name },
         "STATUS_UPDATED",
-        body.content || "IT工单系统通知测试"
+        body.content || "趣然工单系统通知测试"
       )
     );
   } catch (error) {

@@ -1,4 +1,4 @@
-// 中文注释：Next.js API 路由，负责接收请求、校验身份并调用对应服务层。
+// 中文注释：处理人通用转交接口，服务层校验当前用户是否有权处理该工单。
 import { getCurrentUser } from "@/src/server/auth";
 import { fail, ok, parseJson } from "@/src/lib/http";
 import { TicketService } from "@/src/server/services/ticketService";

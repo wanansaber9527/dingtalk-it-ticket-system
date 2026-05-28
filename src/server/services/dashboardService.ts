@@ -1,7 +1,8 @@
 // 中文注释：业务服务层，封装工单系统核心业务规则和数据操作。
-import type { PrismaClient, User } from "@prisma/client";
+import type { PrismaClient } from "@prisma/client";
 import { prisma as defaultPrisma } from "@/src/lib/prisma";
 import { requireRole } from "@/src/server/permissions";
+import type { UserWithRoles } from "@/src/lib/userRoles";
 import { TicketService } from "./ticketService";
 
 function startOfDay(date = new Date()) {
@@ -36,8 +37,8 @@ export class DashboardService {
     private readonly ticketService = new TicketService(prisma)
   ) {}
 
-  async dashboard(user: User) {
-    requireRole(user, ["IT_ADMIN", "SUPER_ADMIN"]);
+  async dashboard(user: UserWithRoles) {
+    requireRole(user, ["SUPER_ADMIN"]);
     await this.ticketService.refreshOverdueFlags();
     // 中文注释：后台看板只面向管理员，统计全量数据。
     const now = new Date();

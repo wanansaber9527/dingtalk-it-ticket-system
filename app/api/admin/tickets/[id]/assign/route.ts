@@ -8,7 +8,7 @@ export async function POST(request: Request, context: { params: Promise<{ id: st
   try {
     const user = await getCurrentUser(request);
     // 中文注释：后台分派工单必须由管理员操作，防止普通用户直接调用接口。
-    requireRole(user, ["IT_ADMIN", "SUPER_ADMIN"]);
+    requireRole(user, ["SUPER_ADMIN"]);
     const { id } = await context.params;
     const body = await parseJson<{ handlerUserId: string; remark?: string }>(request);
     const service = new TicketService();

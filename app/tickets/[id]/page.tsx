@@ -4,12 +4,13 @@
 
 import { useEffect, useState } from "react";
 import { useParams } from "next/navigation";
-import { Button, Card, Form, Input, Modal, Radio, Space, Timeline, Typography, message } from "antd";
-import { CheckCircleOutlined, CommentOutlined, RollbackOutlined, StarOutlined } from "@ant-design/icons";
+import { Button, Card, Form, Image, Input, Modal, Radio, Space, Timeline, Typography, message } from "antd";
+import { CommentOutlined, StarOutlined } from "@ant-design/icons";
 import { EmployeeShell } from "@/components/tickets/EmployeeShell";
 import { TicketStatusTag } from "@/components/tickets/TicketStatusTag";
 import { actionTypeLabels, priorityLabels } from "@/src/lib/labels";
 import { apiGet, apiPost } from "@/src/lib/clientApi";
+import { attachmentDisplayUrl, parseTicketAttachments } from "@/src/lib/attachments";
 
 type TicketLog = {
   id: string;
@@ -30,6 +31,7 @@ type Ticket = {
   applicantDepartment?: string;
   handlerName?: string;
   description: string;
+  attachments?: string;
   resultSummary?: string;
   satisfactionLevel?: string;
   satisfactionComment?: string;
@@ -40,7 +42,6 @@ export default function TicketDetailPage() {
   const params = useParams<{ id: string }>();
   const [ticket, setTicket] = useState<Ticket | null>(null);
   const [commentOpen, setCommentOpen] = useState(false);
-  const [reopenOpen, setReopenOpen] = useState(false);
   const [satisfactionOpen, setSatisfactionOpen] = useState(false);
   const [form] = Form.useForm();
 
@@ -57,7 +58,6 @@ export default function TicketDetailPage() {
       await apiPost(url, values || {});
       message.success("操作成功");
       setCommentOpen(false);
-      setReopenOpen(false);
       setSatisfactionOpen(false);
       form.resetFields();
       load();
@@ -70,6 +70,10 @@ export default function TicketDetailPage() {
     <EmployeeShell title="工单详情">
       {ticket && (
         <Space direction="vertical" size={14} style={{ width: "100%" }}>
+          {(() => {
+            const attachments = parseTicketAttachments(ticket.attachments);
+            return (
+              <>
           <Card size="small">
             <Space direction="vertical" size={8} style={{ width: "100%" }}>
               <Space style={{ justifyContent: "space-between", width: "100%" }}>
@@ -89,6 +93,25 @@ export default function TicketDetailPage() {
             <div className="timeline-note">{ticket.description}</div>
           </Card>
 
+          {attachments.length > 0 && (
+            <Card size="small" title="问题截图">
+              <Image.PreviewGroup>
+                <Space wrap className="attachment-preview-grid">
+                  {attachments.map((item) => (
+                    <Image
+                      key={item.url}
+                      src={attachmentDisplayUrl(item.url)}
+                      alt={item.name}
+                      width={112}
+                      height={112}
+                      style={{ objectFit: "cover", borderRadius: 10 }}
+                    />
+                  ))}
+                </Space>
+              </Image.PreviewGroup>
+            </Card>
+          )}
+
           {ticket.resultSummary && (
             <Card size="small" title="处理结果">
               <div className="timeline-note">{ticket.resultSummary}</div>
@@ -98,12 +121,6 @@ export default function TicketDetailPage() {
           <Space wrap>
             <Button icon={<CommentOutlined />} onClick={() => setCommentOpen(true)}>
               补充说明
-            </Button>
-            <Button icon={<CheckCircleOutlined />} type="primary" disabled={ticket.status !== "WAITING_CONFIRM"} onClick={() => submitAction(`/api/tickets/${ticket.id}/confirm`)}>
-              确认完成
-            </Button>
-            <Button icon={<RollbackOutlined />} disabled={ticket.status !== "WAITING_CONFIRM"} onClick={() => setReopenOpen(true)}>
-              退回处理
             </Button>
             <Button icon={<StarOutlined />} disabled={!["COMPLETED", "CLOSED"].includes(ticket.status as string)} onClick={() => setSatisfactionOpen(true)}>
               满意度
@@ -125,20 +142,15 @@ export default function TicketDetailPage() {
               }))}
             />
           </Card>
+              </>
+            );
+          })()}
         </Space>
       )}
 
       <Modal title="补充说明" open={commentOpen} onCancel={() => setCommentOpen(false)} onOk={() => form.submit()} destroyOnClose>
         <Form form={form} layout="vertical" onFinish={(values) => submitAction(`/api/tickets/${params.id}/comments`, values)}>
           <Form.Item name="remark" label="说明" rules={[{ required: true, message: "请填写说明" }]}>
-            <Input.TextArea rows={4} />
-          </Form.Item>
-        </Form>
-      </Modal>
-
-      <Modal title="退回继续处理" open={reopenOpen} onCancel={() => setReopenOpen(false)} onOk={() => form.submit()} destroyOnClose>
-        <Form form={form} layout="vertical" onFinish={(values) => submitAction(`/api/tickets/${params.id}/reopen`, values)}>
-          <Form.Item name="remark" label="原因" rules={[{ required: true, message: "请填写退回原因" }]}>
             <Input.TextArea rows={4} />
           </Form.Item>
         </Form>
