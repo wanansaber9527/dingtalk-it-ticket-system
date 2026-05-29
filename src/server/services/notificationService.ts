@@ -201,12 +201,12 @@ export class NotificationService {
           {
             type: "markdown",
             id: "ticket_title",
-            markdown: `## ${title}\n\n${status}`
+            text: `## ${title}\n\n${status}`
           },
           {
             type: "markdown",
             id: "ticket_notice",
-            markdown: this.interactiveNotice(content)
+            text: this.interactiveNotice(content)
           },
           {
             type: "divider",
@@ -215,7 +215,7 @@ export class NotificationService {
           {
             type: "markdown",
             id: "ticket_base",
-            markdown: this.interactiveBaseMarkdown(ticket)
+            text: this.interactiveBaseMarkdown(ticket)
           },
           {
             type: "divider",
@@ -224,20 +224,29 @@ export class NotificationService {
           {
             type: "markdown",
             id: "ticket_stats",
-            markdown: this.interactiveStatsMarkdown(stats)
+            text: this.interactiveStatsMarkdown(stats)
           },
           {
             type: "action",
             id: "ticket_action",
             actions: [
               {
-                type: "jump",
-                text: action.title,
-                url: action.url
+                type: "button",
+                id: "ticket_action_button",
+                label: {
+                  type: "text",
+                  id: "ticket_action_label",
+                  text: action.title
+                },
+                actionType: "openLink",
+                status: "primary",
+                url: {
+                  all: action.url
+                }
               }
             ]
           }
-        ].filter((item) => !(item.type === "markdown" && "markdown" in item && !item.markdown))
+        ].filter((item) => !(item.type === "markdown" && "text" in item && !item.text))
       }
     };
   }

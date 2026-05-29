@@ -17,6 +17,7 @@ type DingTalkAccessTokenResponse = {
   access_token?: string;
   accessToken?: string;
   expires_in?: number;
+  expireIn?: number;
 };
 
 export type DingTalkUserDetail = {
@@ -102,6 +103,7 @@ function fillTemplate(template: string, params: Record<string, string>) {
 
 export class DingTalkClient {
   private accessTokenCache?: { value: string; expiresAt: number };
+  private openApiAccessTokenCache?: { value: string; expiresAt: number };
 
   private get mockEnabled() {
     // 中文注释：本地开发时使用 mock 身份和通知，避免没有钉钉参数时无法调试。
@@ -136,6 +138,29 @@ export class DingTalkClient {
     this.accessTokenCache = {
       value: token,
       expiresAt: Date.now() + (data.expires_in || 7200) * 1000
+    };
+    return token;
+  }
+
+  async getOpenApiAccessToken() {
+    if (this.mockEnabled) return "mock-access-token";
+    if (this.openApiAccessTokenCache && this.openApiAccessTokenCache.expiresAt > Date.now() + 60_000) {
+      return this.openApiAccessTokenCache.value;
+    }
+
+    const data = await this.fetchJson<DingTalkAccessTokenResponse>("https://api.dingtalk.com/v1.0/oauth2/accessToken", {
+      method: "POST",
+      body: {
+        appKey: this.requireEnv("DINGTALK_CLIENT_ID"),
+        appSecret: this.requireEnv("DINGTALK_CLIENT_SECRET")
+      }
+    });
+    const token = data.accessToken || data.access_token;
+    if (!token) throw new Error("钉钉新版 access_token 响应缺少 accessToken 字段");
+
+    this.openApiAccessTokenCache = {
+      value: token,
+      expiresAt: Date.now() + (data.expireIn || data.expires_in || 7200) * 1000
     };
     return token;
   }
@@ -258,7 +283,7 @@ export class DingTalkClient {
     if (this.mockEnabled) {
       return { mocked: true, receiverUserId, payload };
     }
-    const accessToken = await this.getAccessToken();
+    const accessToken = await this.getOpenApiAccessToken();
     const body: Record<string, unknown> = {
       singleChatReceiver: JSON.stringify({ userId: receiverUserId }),
       cardTemplateId: payload.cardTemplateId || process.env.DINGTALK_INTERACTIVE_CARD_TEMPLATE_ID || "StandardCard",
