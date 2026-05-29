@@ -134,12 +134,25 @@ export class NotificationService {
     if (!ticket || !action) return content;
     const stats = await this.ticketStats(ticket, target);
     return {
-      msgtype: "action_card",
-      action_card: {
-        title: `${ticket.ticketNo} ${ticket.title}`,
-        markdown: this.ticketMarkdown(ticket, notificationType, content, stats, action.title),
-        single_title: action.title,
-        single_url: action.url
+      msgtype: "oa",
+      oa: {
+        message_url: action.url,
+        pc_message_url: action.url,
+        head: {
+          bgcolor: this.oaHeadColor(ticket, notificationType),
+          text: "趣然工单"
+        },
+        status_bar: {
+          status_value: this.oaStatusText(ticket, notificationType),
+          status_bg: this.oaStatusColor(ticket, notificationType)
+        },
+        body: {
+          title: this.ticketHeadline(ticket, notificationType),
+          form: this.oaForm(ticket),
+          rich: this.oaRich(stats),
+          content: this.oaContent(ticket, content, stats, action.title),
+          author: "来自 钉钉 IT 工单"
+        }
       }
     };
   }
@@ -214,6 +227,69 @@ export class NotificationService {
       "",
       stats.footnote
     ].join("\n");
+  }
+
+  private oaForm(ticket: TicketNotificationInfo) {
+    return [
+      { key: "工单编号:", value: ticket.ticketNo },
+      { key: "问题分类:", value: ticket.categoryName || "-" },
+      { key: "申请人:", value: ticket.applicantName },
+      { key: "所属部门:", value: ticket.applicantDepartment || "-" },
+      { key: "执行人员:", value: ticket.handlerName || "待分派" },
+      { key: "提交时间:", value: this.formatDate(ticket.createdAt) }
+    ];
+  }
+
+  private oaRich(stats: TicketNoticeStats) {
+    const primary = stats.metrics[0] || { label: "本月", value: "-" };
+    return {
+      num: primary.value,
+      unit: primary.label
+    };
+  }
+
+  private oaContent(ticket: TicketNotificationInfo, content: string, stats: TicketNoticeStats, actionTitle: string) {
+    const notice = content
+      .split("\n")
+      .map((line) => line.trim())
+      .filter(Boolean)[0];
+    const statText = stats.metrics.map((metric) => `${metric.label}${metric.value}`).join("，");
+    return [
+      notice || `${ticket.ticketNo} 状态更新`,
+      `当前状态：${statusText[ticket.status]}`,
+      `问题摘要：${this.descriptionSummary(ticket.description)}`,
+      `${stats.title}：${statText}`,
+      stats.footnote,
+      `点击卡片${actionTitle}`
+    ].join("\n");
+  }
+
+  private oaStatusText(ticket: TicketNotificationInfo, notificationType: NotificationType) {
+    if (notificationType === "TICKET_OVERDUE") return "已超时";
+    if (notificationType === "TICKET_FIRST_RESPONSE_DUE_SOON" || notificationType === "TICKET_RESOLVE_DUE_SOON") return "即将超时";
+    return statusText[ticket.status];
+  }
+
+  private oaHeadColor(ticket: TicketNotificationInfo, notificationType: NotificationType) {
+    if (notificationType === "TICKET_OVERDUE") return "FFFFEAEA";
+    if (notificationType === "TICKET_FIRST_RESPONSE_DUE_SOON" || notificationType === "TICKET_RESOLVE_DUE_SOON") return "FFFFF4DE";
+    if (ticket.status === "COMPLETED" || ticket.status === "CLOSED") return "FFE9F9F1";
+    return "FFEAF6FF";
+  }
+
+  private oaStatusColor(ticket: TicketNotificationInfo, notificationType: NotificationType) {
+    if (notificationType === "TICKET_OVERDUE") return "0xFFFF4D4F";
+    if (notificationType === "TICKET_FIRST_RESPONSE_DUE_SOON" || notificationType === "TICKET_RESOLVE_DUE_SOON") return "0xFFFF9800";
+    const colors: Record<Ticket["status"], string> = {
+      PENDING: "0xFFFF9800",
+      ASSIGNED: "0xFF007CBE",
+      PROCESSING: "0xFF16C784",
+      COMPLETED: "0xFF16C784",
+      CLOSED: "0xFF16C784",
+      REJECTED: "0xFFFF4D4F",
+      CANCELLED: "0xFF8E9AAA"
+    };
+    return colors[ticket.status];
   }
 
   private async ticketStats(ticket: TicketNotificationInfo, target: NotifyTarget): Promise<TicketNoticeStats> {

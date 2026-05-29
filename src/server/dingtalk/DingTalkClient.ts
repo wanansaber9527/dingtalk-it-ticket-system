@@ -54,6 +54,30 @@ export type DingTalkWorkNoticeMessage =
         single_title?: string;
         single_url?: string;
       };
+    }
+  | {
+      msgtype: "oa";
+      oa: {
+        message_url: string;
+        pc_message_url?: string;
+        head: {
+          bgcolor: string;
+          text: string;
+        };
+        status_bar?: {
+          status_value: string;
+          status_bg: string;
+        };
+        body: {
+          title?: string;
+          form?: Array<{ key: string; value: string }>;
+          rich?: { num: string; unit: string };
+          content?: string;
+          image?: string;
+          file_count?: string;
+          author?: string;
+        };
+      };
     };
 
 function configuredUrl(value?: string) {
