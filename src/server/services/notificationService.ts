@@ -5,6 +5,16 @@ import { DingTalkClient } from "@/src/server/dingtalk/DingTalkClient";
 import type { DingTalkWorkNoticeMessage } from "@/src/server/dingtalk/DingTalkClient";
 
 type NotifyTarget = Pick<User, "dingtalkUserId" | "name">;
+type TicketMetric = {
+  label: string;
+  value: string;
+};
+type TicketNoticeStats = {
+  title: string;
+  metrics: TicketMetric[];
+  chart: string;
+  footnote: string;
+};
 type TicketNotificationInfo = Pick<
   Ticket,
   | "id"
@@ -39,6 +49,9 @@ const statusText: Record<Ticket["status"], string> = {
   CANCELLED: "已取消"
 };
 
+const activeStatuses: Ticket["status"][] = ["PENDING", "ASSIGNED", "PROCESSING"];
+const finishedStatuses: Ticket["status"][] = ["COMPLETED", "CLOSED"];
+
 export class NotificationService {
   constructor(
     private readonly prisma: PrismaClient = defaultPrisma,
@@ -64,9 +77,10 @@ export class NotificationService {
     });
 
     try {
+      const message = await this.buildTicketWorkNotice(ticket, target, notificationType, content);
       await this.dingtalkClient.sendWorkNotification(
         target.dingtalkUserId,
-        this.buildTicketWorkNotice(ticket, target, notificationType, content)
+        message
       );
       return this.prisma.notification.update({
         where: { id: notification.id },
@@ -87,14 +101,15 @@ export class NotificationService {
       include: { ticket: true }
     });
     try {
+      const message = await this.buildTicketWorkNotice(
+        notification.ticket,
+        { dingtalkUserId: notification.receiverUserId, name: notification.receiverName },
+        notification.notificationType,
+        notification.content
+      );
       await this.dingtalkClient.sendWorkNotification(
         notification.receiverUserId,
-        this.buildTicketWorkNotice(
-          notification.ticket,
-          { dingtalkUserId: notification.receiverUserId, name: notification.receiverName },
-          notification.notificationType,
-          notification.content
-        )
+        message
       );
       return this.prisma.notification.update({
         where: { id: notificationId },
@@ -109,19 +124,20 @@ export class NotificationService {
     }
   }
 
-  private buildTicketWorkNotice(
+  private async buildTicketWorkNotice(
     ticket: TicketNotificationInfo | null,
     target: NotifyTarget,
     notificationType: NotificationType,
     content: string
-  ): string | DingTalkWorkNoticeMessage {
+  ): Promise<string | DingTalkWorkNoticeMessage> {
     const action = ticket ? this.ticketAction(ticket, target, notificationType) : null;
     if (!ticket || !action) return content;
+    const stats = await this.ticketStats(ticket, target);
     return {
       msgtype: "action_card",
       action_card: {
         title: `${ticket.ticketNo} ${ticket.title}`,
-        markdown: this.ticketMarkdown(ticket, content),
+        markdown: this.ticketMarkdown(ticket, notificationType, content, stats, action.title),
         single_title: action.title,
         single_url: action.url
       }
@@ -145,7 +161,13 @@ export class NotificationService {
     return { title: "查看工单", url: `${baseUrl}/admin/tickets/${ticket.id}` };
   }
 
-  private ticketMarkdown(ticket: TicketNotificationInfo, content: string) {
+  private ticketMarkdown(
+    ticket: TicketNotificationInfo,
+    notificationType: NotificationType,
+    content: string,
+    stats: TicketNoticeStats,
+    actionTitle: string
+  ) {
     const noticeLines = content
       .split("\n")
       .map((line) => line.trim())
@@ -165,14 +187,175 @@ export class NotificationService {
     ];
 
     return [
-      "### 趣然工单通知",
+      "### 趣然工单系统",
+      `> ${this.noticeScene(notificationType)}　　${this.statusBadge(ticket, notificationType)}`,
       "",
       ...noticeLines.map((line) => `**${this.escapeMarkdown(line)}**  `),
       "",
-      ...rows.map(([key, value]) => `**${key}：** ${this.escapeMarkdown(value)}  `)
-    ]
-      .filter(Boolean)
-      .join("\n");
+      `#### ${this.escapeMarkdown(this.ticketHeadline(ticket, notificationType))}`,
+      "",
+      ...rows.map(([key, value]) => `**${key}：** ${this.escapeMarkdown(value)}  `),
+      "",
+      "`来自 钉钉 IT 工单`",
+      "",
+      "---",
+      "",
+      `**${this.escapeMarkdown(stats.title)}**　　查看我的数据 >`,
+      "",
+      this.metricLine(stats.metrics),
+      "",
+      `**本月走势：** ${stats.chart}`,
+      "",
+      `数据统计：${this.formatDate(new Date())}`,
+      "",
+      `**点击下方按钮${this.escapeMarkdown(actionTitle)}**`,
+      "",
+      "---",
+      "",
+      stats.footnote
+    ].join("\n");
+  }
+
+  private async ticketStats(ticket: TicketNotificationInfo, target: NotifyTarget): Promise<TicketNoticeStats> {
+    const monthStart = this.startOfMonth();
+    const dayStart = this.startOfDay();
+    const isHandler = target.dingtalkUserId === ticket.handlerUserId;
+    const isApplicant = target.dingtalkUserId === ticket.applicantUserId;
+
+    if (isHandler) {
+      const [completedThisMonth, activeCount, overdueCount, onTimeCompleted, todayCompleted] = await this.prisma.$transaction([
+        this.prisma.ticket.count({
+          where: { handlerUserId: target.dingtalkUserId, status: { in: finishedStatuses }, resolvedAt: { gte: monthStart } }
+        }),
+        this.prisma.ticket.count({
+          where: { handlerUserId: target.dingtalkUserId, status: { in: activeStatuses } }
+        }),
+        this.prisma.ticket.count({
+          where: {
+            handlerUserId: target.dingtalkUserId,
+            status: { in: activeStatuses },
+            OR: [{ isFirstResponseOverdue: true }, { isResolveOverdue: true }]
+          }
+        }),
+        this.prisma.ticket.count({
+          where: {
+            handlerUserId: target.dingtalkUserId,
+            status: { in: finishedStatuses },
+            resolvedAt: { gte: monthStart },
+            isResolveOverdue: false
+          }
+        }),
+        this.prisma.ticket.count({
+          where: { handlerUserId: target.dingtalkUserId, status: { in: finishedStatuses }, resolvedAt: { gte: dayStart } }
+        })
+      ]);
+
+      const onTimeRate = completedThisMonth > 0 ? `${Math.round((onTimeCompleted / completedThisMonth) * 100)}%` : "-";
+      return {
+        title: `${target.name}的处理数据`,
+        metrics: [
+          { label: "本月处理", value: String(completedThisMonth) },
+          { label: "待处理", value: String(activeCount) },
+          { label: "准时率", value: onTimeRate }
+        ],
+        chart: this.metricBars(completedThisMonth, activeCount, overdueCount),
+        footnote: `⚡ 今日已完成 ${todayCompleted} 个工单`
+      };
+    }
+
+    if (isApplicant) {
+      const [submittedThisMonth, activeCount, completedThisMonth, todaySubmitted] = await this.prisma.$transaction([
+        this.prisma.ticket.count({
+          where: { applicantUserId: target.dingtalkUserId, createdAt: { gte: monthStart } }
+        }),
+        this.prisma.ticket.count({
+          where: { applicantUserId: target.dingtalkUserId, status: { in: activeStatuses } }
+        }),
+        this.prisma.ticket.count({
+          where: { applicantUserId: target.dingtalkUserId, status: { in: finishedStatuses }, resolvedAt: { gte: monthStart } }
+        }),
+        this.prisma.ticket.count({
+          where: { applicantUserId: target.dingtalkUserId, createdAt: { gte: dayStart } }
+        })
+      ]);
+
+      return {
+        title: `${target.name}的工单数据`,
+        metrics: [
+          { label: "本月提交", value: String(submittedThisMonth) },
+          { label: "进行中", value: String(activeCount) },
+          { label: "已完成", value: String(completedThisMonth) }
+        ],
+        chart: this.metricBars(submittedThisMonth, activeCount, completedThisMonth),
+        footnote: `⚡ 今日已提交 ${todaySubmitted} 个工单`
+      };
+    }
+
+    const [todayNew, activeCount, overdueCount] = await this.prisma.$transaction([
+      this.prisma.ticket.count({ where: { createdAt: { gte: dayStart } } }),
+      this.prisma.ticket.count({ where: { status: { in: activeStatuses } } }),
+      this.prisma.ticket.count({
+        where: { status: { in: activeStatuses }, OR: [{ isFirstResponseOverdue: true }, { isResolveOverdue: true }] }
+      })
+    ]);
+
+    return {
+      title: "平台工单数据",
+      metrics: [
+        { label: "今日新增", value: String(todayNew) },
+        { label: "待处理", value: String(activeCount) },
+        { label: "已超时", value: String(overdueCount) }
+      ],
+      chart: this.metricBars(todayNew, activeCount, overdueCount),
+      footnote: `⚡ 当前共有 ${activeCount} 个待处理工单`
+    };
+  }
+
+  private noticeScene(notificationType: NotificationType) {
+    const sceneText: Record<NotificationType, string> = {
+      TICKET_CREATED: "IT 工单 / 提交成功",
+      NEW_TICKET_PENDING: "IT 工单 / 处理提醒",
+      TICKET_ASSIGNED: "IT 工单 / 分派通知",
+      STATUS_UPDATED: "IT 工单 / 状态更新",
+      TICKET_RESOLVED: "IT 工单 / 完结通知",
+      TICKET_FIRST_RESPONSE_DUE_SOON: "IT 工单 / 首响即将超时",
+      TICKET_RESOLVE_DUE_SOON: "IT 工单 / 处理即将超时",
+      TICKET_OVERDUE: "IT 工单 / 超时提醒",
+      UNSATISFIED_REVIEW: "IT 工单 / 评价提醒"
+    };
+    return sceneText[notificationType];
+  }
+
+  private statusBadge(ticket: TicketNotificationInfo, notificationType: NotificationType) {
+    if (notificationType === "TICKET_OVERDUE") return "🔴 已超时";
+    if (notificationType === "TICKET_FIRST_RESPONSE_DUE_SOON" || notificationType === "TICKET_RESOLVE_DUE_SOON") return "🟡 即将超时";
+    const badges: Record<Ticket["status"], string> = {
+      PENDING: "🟠 待受理",
+      ASSIGNED: "🔵 已分派",
+      PROCESSING: "🟢 处理中",
+      COMPLETED: "✅ 已完成",
+      CLOSED: "✅ 已关闭",
+      REJECTED: "⛔ 已驳回",
+      CANCELLED: "⚪ 已取消"
+    };
+    return badges[ticket.status];
+  }
+
+  private ticketHeadline(ticket: TicketNotificationInfo, notificationType: NotificationType) {
+    if (notificationType === "TICKET_CREATED") return `${ticket.applicantName}提交的${ticket.categoryName}工单`;
+    if (notificationType === "TICKET_RESOLVED") return `${ticket.applicantName}的${ticket.categoryName}工单已完成`;
+    if (notificationType === "TICKET_OVERDUE") return `${ticket.ticketNo} 已超时，请及时处理`;
+    return `${ticket.applicantName}提交的${ticket.categoryName}工单`;
+  }
+
+  private metricLine(metrics: TicketMetric[]) {
+    return metrics.map((metric) => `\`${metric.label} ${this.escapeMarkdown(metric.value)}\``).join("　");
+  }
+
+  private metricBars(...values: number[]) {
+    const bars = ["▂", "▄", "▆", "█"];
+    const max = Math.max(...values, 1);
+    return values.map((value) => bars[Math.min(bars.length - 1, Math.round((value / max) * (bars.length - 1)))]).join(" ");
   }
 
   private appBaseUrl() {
@@ -185,6 +368,16 @@ export class NotificationService {
       timeZone: "Asia/Shanghai",
       hour12: false
     });
+  }
+
+  private startOfMonth() {
+    const now = new Date();
+    return new Date(now.getFullYear(), now.getMonth(), 1);
+  }
+
+  private startOfDay() {
+    const now = new Date();
+    return new Date(now.getFullYear(), now.getMonth(), now.getDate());
   }
 
   private descriptionSummary(description: string) {
