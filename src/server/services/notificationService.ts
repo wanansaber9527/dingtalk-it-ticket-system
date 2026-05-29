@@ -122,20 +122,7 @@ export class NotificationService {
     notificationType: NotificationType,
     content: string
   ) {
-    const action = ticket ? this.ticketAction(ticket, target, notificationType) : null;
-    if (ticket && action && this.dingtalkClient.interactiveCardEnabled()) {
-      try {
-        const stats = await this.ticketStats(ticket, target);
-        await this.dingtalkClient.sendInteractiveCard(
-          target.dingtalkUserId,
-          this.buildInteractiveCard(ticket, notificationType, content, stats, action)
-        );
-        return;
-      } catch (error) {
-        console.error("钉钉互动卡片发送失败，已降级为工作通知", error);
-      }
-    }
-
+    // 中文注释：正式通知回退为稳定的钉钉工作通知 OA 卡片，不再优先尝试互动卡片。
     const message = await this.buildTicketWorkNotice(ticket, target, notificationType, content);
     await this.dingtalkClient.sendWorkNotification(target.dingtalkUserId, message);
   }
@@ -156,7 +143,7 @@ export class NotificationService {
         pc_message_url: action.url,
         head: {
           bgcolor: this.oaHeadColor(ticket, notificationType),
-          text: "趣然工单"
+          text: "趣然IT工单系统"
         },
         status_bar: {
           status_value: this.oaStatusText(ticket, notificationType),
@@ -403,10 +390,10 @@ export class NotificationService {
   }
 
   private oaHeadColor(ticket: TicketNotificationInfo, notificationType: NotificationType) {
-    if (notificationType === "TICKET_OVERDUE") return "FFFFEAEA";
-    if (notificationType === "TICKET_FIRST_RESPONSE_DUE_SOON" || notificationType === "TICKET_RESOLVE_DUE_SOON") return "FFFFF4DE";
-    if (ticket.status === "COMPLETED" || ticket.status === "CLOSED") return "FFE9F9F1";
-    return "FFEAF6FF";
+    if (notificationType === "TICKET_OVERDUE") return "FFFF4D4F";
+    if (notificationType === "TICKET_FIRST_RESPONSE_DUE_SOON" || notificationType === "TICKET_RESOLVE_DUE_SOON") return "FFFF9800";
+    if (ticket.status === "COMPLETED" || ticket.status === "CLOSED") return "FF16C784";
+    return "FF007CBE";
   }
 
   private oaStatusColor(ticket: TicketNotificationInfo, notificationType: NotificationType) {
