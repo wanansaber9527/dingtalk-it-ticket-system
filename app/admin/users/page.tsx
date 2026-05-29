@@ -55,6 +55,7 @@ export default function UsersPage() {
   const [mode, setMode] = useState<AddMode>("admin");
   const [people, setPeople] = useState<DingTalkPerson[]>([]);
   const [peopleLoading, setPeopleLoading] = useState(false);
+  const [syncLoading, setSyncLoading] = useState(false);
   const [currentUser, setCurrentUser] = useState<User | null>(null);
   const [allKeyword, setAllKeyword] = useState("");
   const [form] = Form.useForm();

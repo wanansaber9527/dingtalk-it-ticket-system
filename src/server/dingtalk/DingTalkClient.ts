@@ -41,6 +41,21 @@ export type DingTalkSelectableUser = {
   avatar?: string;
 };
 
+export type DingTalkWorkNoticeMessage =
+  | {
+      msgtype: "text";
+      text: { content: string };
+    }
+  | {
+      msgtype: "action_card";
+      action_card: {
+        title?: string;
+        markdown: string;
+        single_title?: string;
+        single_url?: string;
+      };
+    };
+
 function configuredUrl(value?: string) {
   return value && value.trim().length > 0 ? value.trim() : null;
 }
@@ -186,18 +201,16 @@ export class DingTalkClient {
     );
   }
 
-  async sendWorkNotification(receiverUserId: string, content: string) {
+  async sendWorkNotification(receiverUserId: string, message: string | DingTalkWorkNoticeMessage) {
+    const msg = typeof message === "string" ? { msgtype: "text" as const, text: { content: message } } : message;
     if (this.mockEnabled) {
-      return { mocked: true, receiverUserId, content };
+      return { mocked: true, receiverUserId, msg };
     }
     const accessToken = await this.getAccessToken();
     const payload = {
       agent_id: Number(this.requireEnv("DINGTALK_AGENT_ID")),
       userid_list: receiverUserId,
-      msg: {
-        msgtype: "text",
-        text: { content }
-      }
+      msg
     };
     const url = configuredUrl(process.env.DINGTALK_WORK_NOTICE_URL);
     return url
