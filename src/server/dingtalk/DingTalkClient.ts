@@ -80,6 +80,14 @@ export type DingTalkWorkNoticeMessage =
       };
     };
 
+export type DingTalkInteractiveCardPayload = {
+  cardTemplateId?: string;
+  cardBizId: string;
+  cardData: Record<string, unknown>;
+  robotCode?: string;
+  callbackUrl?: string;
+};
+
 function configuredUrl(value?: string) {
   return value && value.trim().length > 0 ? value.trim() : null;
 }
@@ -242,6 +250,29 @@ export class DingTalkClient {
       : this.fetchOapi(this.withAccessToken("https://oapi.dingtalk.com/topapi/message/corpconversation/asyncsend_v2", accessToken), payload);
   }
 
+  interactiveCardEnabled() {
+    return process.env.DINGTALK_INTERACTIVE_CARD_ENABLED === "true";
+  }
+
+  async sendInteractiveCard(receiverUserId: string, payload: DingTalkInteractiveCardPayload) {
+    if (this.mockEnabled) {
+      return { mocked: true, receiverUserId, payload };
+    }
+    const accessToken = await this.getAccessToken();
+    const body: Record<string, unknown> = {
+      singleChatReceiver: JSON.stringify({ userId: receiverUserId }),
+      cardTemplateId: payload.cardTemplateId || process.env.DINGTALK_INTERACTIVE_CARD_TEMPLATE_ID || "StandardCard",
+      cardBizId: payload.cardBizId,
+      robotCode: payload.robotCode || process.env.DINGTALK_INTERACTIVE_CARD_ROBOT_CODE || process.env.DINGTALK_CLIENT_ID,
+      cardData: JSON.stringify(payload.cardData),
+      pullStrategy: false
+    };
+    if (payload.callbackUrl) body.callbackUrl = payload.callbackUrl;
+
+    const url = configuredUrl(process.env.DINGTALK_INTERACTIVE_CARD_SEND_URL) || "https://api.dingtalk.com/v1.0/im/v1.0/robot/interactiveCards/send";
+    return this.fetchDingTalkOpenApi(url, accessToken, body);
+  }
+
   private requireEnv(name: string) {
     const value = process.env[name];
     if (!value) throw new Error(`未配置 ${name}`);
@@ -300,6 +331,23 @@ export class DingTalkClient {
       method: options.method || "GET",
       headers,
       body: options.body ? JSON.stringify(options.body) : undefined
+    });
+    const text = await response.text();
+    const data = text ? JSON.parse(text) : {};
+    if (!response.ok) {
+      throw new Error(`钉钉接口调用失败：${response.status} ${text}`);
+    }
+    return data as T;
+  }
+
+  private async fetchDingTalkOpenApi<T>(url: string, accessToken: string, body: unknown): Promise<T> {
+    const response = await fetch(url, {
+      method: "POST",
+      headers: {
+        "content-type": "application/json",
+        "x-acs-dingtalk-access-token": accessToken
+      },
+      body: JSON.stringify(body)
     });
     const text = await response.text();
     const data = text ? JSON.parse(text) : {};

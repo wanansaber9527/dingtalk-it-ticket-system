@@ -2,7 +2,7 @@
 import type { NotificationType, PrismaClient, Ticket, User } from "@prisma/client";
 import { prisma as defaultPrisma } from "@/src/lib/prisma";
 import { DingTalkClient } from "@/src/server/dingtalk/DingTalkClient";
-import type { DingTalkWorkNoticeMessage } from "@/src/server/dingtalk/DingTalkClient";
+import type { DingTalkInteractiveCardPayload, DingTalkWorkNoticeMessage } from "@/src/server/dingtalk/DingTalkClient";
 
 type NotifyTarget = Pick<User, "dingtalkUserId" | "name">;
 type TicketMetric = {
@@ -77,11 +77,7 @@ export class NotificationService {
     });
 
     try {
-      const message = await this.buildTicketWorkNotice(ticket, target, notificationType, content);
-      await this.dingtalkClient.sendWorkNotification(
-        target.dingtalkUserId,
-        message
-      );
+      await this.sendDingTalkTicketNotification(ticket, target, notificationType, content);
       return this.prisma.notification.update({
         where: { id: notification.id },
         data: { sendStatus: "SUCCESS", errorMessage: null }
@@ -101,15 +97,11 @@ export class NotificationService {
       include: { ticket: true }
     });
     try {
-      const message = await this.buildTicketWorkNotice(
+      await this.sendDingTalkTicketNotification(
         notification.ticket,
         { dingtalkUserId: notification.receiverUserId, name: notification.receiverName },
         notification.notificationType,
         notification.content
-      );
-      await this.dingtalkClient.sendWorkNotification(
-        notification.receiverUserId,
-        message
       );
       return this.prisma.notification.update({
         where: { id: notificationId },
@@ -122,6 +114,30 @@ export class NotificationService {
         data: { sendStatus: "FAILED", errorMessage: message }
       });
     }
+  }
+
+  private async sendDingTalkTicketNotification(
+    ticket: TicketNotificationInfo | null,
+    target: NotifyTarget,
+    notificationType: NotificationType,
+    content: string
+  ) {
+    const action = ticket ? this.ticketAction(ticket, target, notificationType) : null;
+    if (ticket && action && this.dingtalkClient.interactiveCardEnabled()) {
+      try {
+        const stats = await this.ticketStats(ticket, target);
+        await this.dingtalkClient.sendInteractiveCard(
+          target.dingtalkUserId,
+          this.buildInteractiveCard(ticket, notificationType, content, stats, action)
+        );
+        return;
+      } catch (error) {
+        console.error("钉钉互动卡片发送失败，已降级为工作通知", error);
+      }
+    }
+
+    const message = await this.buildTicketWorkNotice(ticket, target, notificationType, content);
+    await this.dingtalkClient.sendWorkNotification(target.dingtalkUserId, message);
   }
 
   private async buildTicketWorkNotice(
@@ -153,6 +169,75 @@ export class NotificationService {
           content: this.oaContent(ticket, content, stats, action.title),
           author: "来自 钉钉 IT 工单"
         }
+      }
+    };
+  }
+
+  private buildInteractiveCard(
+    ticket: TicketNotificationInfo,
+    notificationType: NotificationType,
+    content: string,
+    stats: TicketNoticeStats,
+    action: { title: string; url: string }
+  ): DingTalkInteractiveCardPayload {
+    const status = this.statusBadge(ticket, notificationType);
+    const title = this.ticketHeadline(ticket, notificationType);
+    return {
+      cardBizId: `it_${ticket.id}_${Date.now()}`,
+      callbackUrl: process.env.DINGTALK_INTERACTIVE_CARD_CALLBACK_URL,
+      cardData: {
+        config: {
+          autoLayout: true,
+          enableForward: true
+        },
+        header: {
+          title: {
+            type: "text",
+            text: `趣然工单 · ${this.noticeScene(notificationType)}`
+          },
+          logo: process.env.DINGTALK_INTERACTIVE_CARD_LOGO || undefined
+        },
+        contents: [
+          {
+            type: "markdown",
+            id: "ticket_title",
+            markdown: `## ${title}\n\n${status}`
+          },
+          {
+            type: "markdown",
+            id: "ticket_notice",
+            markdown: this.interactiveNotice(content)
+          },
+          {
+            type: "divider",
+            id: "divider_base"
+          },
+          {
+            type: "markdown",
+            id: "ticket_base",
+            markdown: this.interactiveBaseMarkdown(ticket)
+          },
+          {
+            type: "divider",
+            id: "divider_stats"
+          },
+          {
+            type: "markdown",
+            id: "ticket_stats",
+            markdown: this.interactiveStatsMarkdown(stats)
+          },
+          {
+            type: "action",
+            id: "ticket_action",
+            actions: [
+              {
+                type: "jump",
+                text: action.title,
+                url: action.url
+              }
+            ]
+          }
+        ].filter((item) => !(item.type === "markdown" && "markdown" in item && !item.markdown))
       }
     };
   }
@@ -224,6 +309,44 @@ export class NotificationService {
       `**点击下方按钮${this.escapeMarkdown(actionTitle)}**`,
       "",
       "---",
+      "",
+      stats.footnote
+    ].join("\n");
+  }
+
+  private interactiveNotice(content: string) {
+    return content
+      .split("\n")
+      .map((line) => line.trim())
+      .filter(Boolean)
+      .filter((line) => !["工单标题：", "工单类型：", "提交人：", "执行人员：", "当前状态：", "提交时间：", "描述摘要："].some((key) => line.startsWith(key)))
+      .map((line) => `**${line}**`)
+      .join("\n\n");
+  }
+
+  private interactiveBaseMarkdown(ticket: TicketNotificationInfo) {
+    return [
+      `**工单编号：** ${ticket.ticketNo}`,
+      `**问题分类：** ${ticket.categoryName || "-"}`,
+      `**申请人：** ${ticket.applicantName}`,
+      `**所属部门：** ${ticket.applicantDepartment || "-"}`,
+      `**执行人员：** ${ticket.handlerName || "待分派"}`,
+      `**当前状态：** ${statusText[ticket.status]}`,
+      `**提交时间：** ${this.formatDate(ticket.createdAt)}`,
+      `**问题摘要：** ${this.descriptionSummary(ticket.description)}`,
+      "`来自 钉钉 IT 工单`"
+    ].join("\n\n");
+  }
+
+  private interactiveStatsMarkdown(stats: TicketNoticeStats) {
+    return [
+      `### ${stats.title}`,
+      "",
+      stats.metrics.map((metric) => `**${metric.label}**：${metric.value}`).join("　　"),
+      "",
+      `**本月走势：** ${stats.chart}`,
+      "",
+      `数据统计：${this.formatDate(new Date())}`,
       "",
       stats.footnote
     ].join("\n");
