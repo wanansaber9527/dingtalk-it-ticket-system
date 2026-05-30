@@ -24,6 +24,7 @@ type Ticket = {
   isResolveOverdue: boolean;
   createdAt: string;
   updatedAt: string;
+  slaResolveDeadline?: string;
 };
 
 const todoStatuses = new Set(["PENDING", "ASSIGNED", "PROCESSING"]);
@@ -110,6 +111,7 @@ export default function HandlerTicketsPage() {
                   {ticket.applicantDepartment ? `（${ticket.applicantDepartment}）` : ""}
                 </div>
                 <div className="muted">提交时间：{new Date(ticket.createdAt).toLocaleString()}</div>
+                <div className="muted">预计处理时间：{ticket.slaResolveDeadline ? new Date(ticket.slaResolveDeadline).toLocaleString() : "-"}</div>
                 {(ticket.isFirstResponseOverdue || ticket.isResolveOverdue) && <Typography.Text type="danger">该工单已超时，请优先处理</Typography.Text>}
                 <Link href={`/handler/tickets/${ticket.id}`}>
                   <Button

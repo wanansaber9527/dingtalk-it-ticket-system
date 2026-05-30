@@ -47,6 +47,7 @@ export type TicketListFilters = {
 };
 
 const terminalStatuses: TicketStatus[] = ["COMPLETED", "CLOSED", "REJECTED", "CANCELLED"];
+const scheduleAdjustableStatuses: TicketStatus[] = ["PENDING", "ASSIGNED", "PROCESSING"];
 
 function startOfToday() {
   const now = new Date();
@@ -321,6 +322,59 @@ export class TicketService {
         }
       });
     }
+    return this.getTicketById(id);
+  }
+
+  async adjustResolveDeadline(id: string, operator: UserWithRoles, deadlineValue: string, remark?: string) {
+    const ticket = await this.getTicketById(id);
+    requireTicketOperator(operator, ticket);
+    if (!scheduleAdjustableStatuses.includes(ticket.status)) {
+      throw new AppError(400, "INVALID_STATUS", "当前工单状态不支持调整预计处理时间");
+    }
+    if (!ticket.handlerUserId) {
+      throw new AppError(400, "HANDLER_REQUIRED", "工单尚未分派处理人，不能调整预计处理时间");
+    }
+
+    const nextDeadline = parseDate(deadlineValue);
+    if (!nextDeadline) {
+      throw new AppError(400, "DEADLINE_REQUIRED", "请选择有效的预计处理时间");
+    }
+    const now = new Date();
+    if (nextDeadline.getTime() <= now.getTime()) {
+      throw new AppError(400, "DEADLINE_MUST_BE_FUTURE", "预计处理时间必须晚于当前时间");
+    }
+
+    const previousDeadline = ticket.slaResolveDeadline;
+    const note = [
+      `调整预计处理时间：${previousDeadline ? this.formatDate(previousDeadline) : "-"} -> ${this.formatDate(nextDeadline)}`,
+      remark?.trim() ? `调整原因：${remark.trim()}` : null
+    ].filter(Boolean).join("\n");
+
+    const updated = await this.prisma.ticket.update({
+      where: { id },
+      data: {
+        slaResolveDeadline: nextDeadline,
+        isResolveOverdue: false
+      }
+    });
+    const log = await this.writeLog(ticket, operator, "STATUS_CHANGE", ticket.status, ticket.status, note);
+    await this.aiTableClient.syncTicket(updated);
+    await this.aiTableClient.syncTicketLog(log);
+    await this.notificationService.sendTicketNotification(
+      updated,
+      { dingtalkUserId: updated.applicantUserId, name: updated.applicantName },
+      "STATUS_UPDATED",
+      this.ticketNotice(
+        updated,
+        [
+          `你的工单预计处理时间已调整：${updated.ticketNo}。`,
+          `原预计处理时间：${previousDeadline ? this.formatDate(previousDeadline) : "-"}`,
+          `新预计处理时间：${this.formatDate(nextDeadline)}`,
+          remark?.trim() ? `调整说明：${remark.trim()}` : null
+        ].filter(Boolean).join("\n")
+      )
+    );
+
     return this.getTicketById(id);
   }
 

@@ -5,8 +5,9 @@
 import { useEffect, useMemo, useState } from "react";
 import Link from "next/link";
 import { useParams, useRouter } from "next/navigation";
-import { Button, Card, Form, Image, Input, Select, Space, Switch, Timeline, Typography, message } from "antd";
-import { CheckCircleOutlined, CommentOutlined, PlayCircleOutlined, RollbackOutlined, SwapOutlined } from "@ant-design/icons";
+import dayjs, { type Dayjs } from "dayjs";
+import { Button, Card, DatePicker, Form, Image, Input, Select, Space, Switch, Timeline, Typography, message } from "antd";
+import { CalendarOutlined, CheckCircleOutlined, CommentOutlined, PlayCircleOutlined, RollbackOutlined, SwapOutlined } from "@ant-design/icons";
 import { EmployeeShell } from "@/components/tickets/EmployeeShell";
 import { TicketStatusTag } from "@/components/tickets/TicketStatusTag";
 import { actionTypeLabels, priorityLabels } from "@/src/lib/labels";
@@ -55,6 +56,10 @@ function canResolve(status: Ticket["status"]) {
   return status === "ASSIGNED" || status === "PROCESSING";
 }
 
+function canAdjustDeadline(status: Ticket["status"]) {
+  return status === "PENDING" || status === "ASSIGNED" || status === "PROCESSING";
+}
+
 export default function HandlerTicketDetailPage() {
   const params = useParams<{ id: string }>();
   const router = useRouter();
@@ -64,6 +69,7 @@ export default function HandlerTicketDetailPage() {
   const [commentForm] = Form.useForm();
   const [resolveForm] = Form.useForm();
   const [transferForm] = Form.useForm();
+  const [deadlineForm] = Form.useForm();
 
   const load = async () => {
     setLoading(true);
@@ -71,6 +77,9 @@ export default function HandlerTicketDetailPage() {
       const data = await apiGet<Ticket>(`/api/tickets/${params.id}`);
       setTicket(data);
       transferForm.setFieldsValue({ handlerUserId: data.handlerUserId });
+      deadlineForm.setFieldsValue({
+        slaResolveDeadline: data.slaResolveDeadline ? dayjs(data.slaResolveDeadline) : undefined
+      });
     } catch (error) {
       message.error(error instanceof Error ? error.message : "加载失败");
     } finally {
@@ -91,6 +100,7 @@ export default function HandlerTicketDetailPage() {
       message.success("操作成功");
       commentForm.resetFields();
       resolveForm.resetFields();
+      deadlineForm.resetFields();
       if (url.endsWith("/transfer")) {
         router.push("/handler/tickets");
         return;
@@ -99,6 +109,18 @@ export default function HandlerTicketDetailPage() {
     } catch (error) {
       message.error(error instanceof Error ? error.message : "操作失败");
     }
+  }
+
+  async function adjustDeadline(values: { slaResolveDeadline?: Dayjs; remark?: string }) {
+    if (!ticket) return;
+    if (!values.slaResolveDeadline) {
+      message.error("请选择新的预计处理时间");
+      return;
+    }
+    await run(`/api/tickets/${ticket.id}/resolve-deadline`, {
+      slaResolveDeadline: values.slaResolveDeadline.toISOString(),
+      remark: values.remark
+    });
   }
 
   return (
@@ -128,7 +150,7 @@ export default function HandlerTicketDetailPage() {
                 <div className="muted">处理人：{ticket.handlerName || "待分派"}</div>
                 <div className="muted">提交时间：{new Date(ticket.createdAt).toLocaleString()}</div>
                 <div className="muted">首响截止：{ticket.slaFirstResponseDeadline ? new Date(ticket.slaFirstResponseDeadline).toLocaleString() : "-"}</div>
-                <div className="muted">完成截止：{ticket.slaResolveDeadline ? new Date(ticket.slaResolveDeadline).toLocaleString() : "-"}</div>
+                <div className="muted">预计处理时间：{ticket.slaResolveDeadline ? new Date(ticket.slaResolveDeadline).toLocaleString() : "-"}</div>
               </Space>
             </Card>
 
@@ -178,6 +200,29 @@ export default function HandlerTicketDetailPage() {
                   </Button>
                 </Form>
               </Space>
+            </Card>
+
+            <Card size="small" title="调整预计处理时间">
+              <Form form={deadlineForm} layout="vertical" onFinish={adjustDeadline}>
+                <Form.Item
+                  name="slaResolveDeadline"
+                  label="新的预计处理时间"
+                  rules={[{ required: true, message: "请选择新的预计处理时间" }]}
+                >
+                  <DatePicker showTime style={{ width: "100%" }} placeholder="选择新的预计处理时间" />
+                </Form.Item>
+                <Form.Item name="remark" label="调整说明">
+                  <Input.TextArea rows={3} placeholder="例如：正在处理其他紧急项目，预计稍后处理该工单" />
+                </Form.Item>
+                <Button
+                  block
+                  htmlType="submit"
+                  icon={<CalendarOutlined />}
+                  disabled={!canAdjustDeadline(ticket.status)}
+                >
+                  保存预计处理时间
+                </Button>
+              </Form>
             </Card>
 
             <Card size="small" title="备注与转交">
