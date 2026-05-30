@@ -1,4 +1,4 @@
-// 中文注释：Prisma 数据模型定义，描述用户、工单、日志、通知、知识库和同步日志等核心表。
+// 中文注释：Prisma 数据模型定义，描述用户、工单、日志、通知和知识库等核心表。
 generator client {
   provider = "prisma-client-js"
 }
@@ -42,12 +42,6 @@ enum SatisfactionLevel {
   UNSATISFIED
 }
 
-enum AiSyncStatus {
-  PENDING
-  SUCCESS
-  FAILED
-}
-
 enum TicketActionType {
   CREATE
   ASSIGN
@@ -79,23 +73,6 @@ enum NotificationType {
 }
 
 enum SendStatus {
-  PENDING
-  SUCCESS
-  FAILED
-}
-
-enum AiTableOperationType {
-  INSERT_TICKET
-  UPDATE_TICKET
-  INSERT_TICKET_LOG
-  INSERT_CATEGORY
-  UPDATE_CATEGORY
-  INSERT_KB
-  INSERT_SATISFACTION
-  RETRY
-}
-
-enum AiTableSyncLogStatus {
   PENDING
   SUCCESS
   FAILED
@@ -158,9 +135,6 @@ model Ticket {
   resultSummary              String?          @db.Text
   satisfactionLevel          SatisfactionLevel?
   satisfactionComment        String?          @db.Text
-  aiTableRecordId            String?
-  aiSyncStatus               AiSyncStatus     @default(PENDING)
-  aiSyncError                String?          @db.Text
   createdAt                  DateTime         @default(now())
   updatedAt                  DateTime         @updatedAt
 
@@ -168,7 +142,6 @@ model Ticket {
   handler                    User?            @relation("HandlerTickets", fields: [handlerUserId], references: [dingtalkUserId])
   logs                       TicketLog[]
   notifications              Notification[]
-  aiSyncLogs                 AiTableSyncLog[]
 
   @@index([status])
   @@index([categoryId])
@@ -250,24 +223,6 @@ model Notification {
 
   @@index([receiverUserId])
   @@index([ticketNo])
-  @@index([createdAt])
-}
-
-model AiTableSyncLog {
-  id              String                @id @default(cuid())
-  ticketId        String?
-  ticketNo        String?
-  operationType   AiTableOperationType
-  requestPayload  String?               @db.LongText
-  responsePayload String?               @db.LongText
-  status          AiTableSyncLogStatus  @default(PENDING)
-  errorMessage    String?               @db.Text
-  createdAt       DateTime              @default(now())
-
-  ticket          Ticket?               @relation(fields: [ticketId], references: [id], onDelete: SetNull)
-
-  @@index([ticketNo])
-  @@index([status])
   @@index([createdAt])
 }
 

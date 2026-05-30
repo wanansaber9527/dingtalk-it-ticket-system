@@ -18,7 +18,6 @@ import {
   requireTicketOperator
 } from "@/src/server/permissions";
 import type { UserWithRoles } from "@/src/lib/userRoles";
-import { DingTalkAiTableClient } from "@/src/server/dingtalk/DingTalkAiTableClient";
 import { NotificationService } from "./notificationService";
 
 export type AttachmentInput = {
@@ -72,7 +71,6 @@ function parseDate(value?: string | null) {
 export class TicketService {
   constructor(
     private readonly prisma: PrismaClient = defaultPrisma,
-    private readonly aiTableClient = new DingTalkAiTableClient(prisma),
     private readonly notificationService = new NotificationService(prisma)
   ) {}
 
@@ -117,8 +115,7 @@ export class TicketService {
     });
 
     const log = await this.writeLog(ticket, applicant, "CREATE", null, "PENDING", "员工提交工单", input.attachments);
-    await this.aiTableClient.syncTicket(ticket);
-    await this.aiTableClient.syncTicketLog(log);
+    void log;
 
     await this.notificationService.sendTicketNotification(
       ticket,
@@ -193,7 +190,7 @@ export class TicketService {
     const ticket = await this.getTicketById(id);
     requireCanViewTicket(operator, ticket);
     const log = await this.writeLog(ticket, operator, "COMMENT", ticket.status, ticket.status, remark, attachments);
-    await this.aiTableClient.syncTicketLog(log);
+    void log;
     return this.getTicketById(id);
   }
 
@@ -214,8 +211,7 @@ export class TicketService {
       }
     });
     const log = await this.writeLog(ticket, operator, "ASSIGN", ticket.status, "ASSIGNED", remark || `分派给${handler.name}`);
-    await this.aiTableClient.syncTicket(updated);
-    await this.aiTableClient.syncTicketLog(log);
+    void log;
     await this.notificationService.sendTicketNotification(
       updated,
       handler,
@@ -242,8 +238,7 @@ export class TicketService {
       }
     });
     const log = await this.writeLog(ticket, operator, "TRANSFER", ticket.status, "ASSIGNED", remark || `转交给${handler.name}`);
-    await this.aiTableClient.syncTicket(updated);
-    await this.aiTableClient.syncTicketLog(log);
+    void log;
     await this.notificationService.sendTicketNotification(
       updated,
       handler,
@@ -271,8 +266,7 @@ export class TicketService {
     const updated = await this.prisma.ticket.update({ where: { id }, data });
     const actionType: TicketActionType = status === "PROCESSING" ? "ACCEPT" : "STATUS_CHANGE";
     const log = await this.writeLog(ticket, operator, actionType, ticket.status, status, remark || "状态变更");
-    await this.aiTableClient.syncTicket(updated);
-    await this.aiTableClient.syncTicketLog(log);
+    void log;
     await this.notifyApplicant(updated, `你的工单状态已更新为：${this.statusText(status)}。`);
     return this.getTicketById(id);
   }
@@ -295,8 +289,7 @@ export class TicketService {
       }
     });
     const log = await this.writeLog(ticket, operator, "RESOLVE", ticket.status, "COMPLETED", resultSummary);
-    await this.aiTableClient.syncTicket(updated);
-    await this.aiTableClient.syncTicketLog(log);
+    void log;
     await this.notificationService.sendTicketNotification(
       updated,
       { dingtalkUserId: updated.applicantUserId, name: updated.applicantName },
@@ -358,8 +351,7 @@ export class TicketService {
       }
     });
     const log = await this.writeLog(ticket, operator, "STATUS_CHANGE", ticket.status, ticket.status, note);
-    await this.aiTableClient.syncTicket(updated);
-    await this.aiTableClient.syncTicketLog(log);
+    void log;
     await this.notificationService.sendTicketNotification(
       updated,
       { dingtalkUserId: updated.applicantUserId, name: updated.applicantName },
@@ -386,8 +378,7 @@ export class TicketService {
       data: { status: "CLOSED", closedAt: new Date() }
     });
     const log = await this.writeLog(ticket, operator, "CLOSE", ticket.status, "CLOSED", remark || "关闭工单");
-    await this.aiTableClient.syncTicket(updated);
-    await this.aiTableClient.syncTicketLog(log);
+    void log;
     await this.notifyApplicant(updated, `你的工单状态已更新为：已关闭。`);
     return this.getTicketById(id);
   }
@@ -432,9 +423,7 @@ export class TicketService {
       }
     });
     const log = await this.writeLog(ticket, applicant, "SATISFACTION", ticket.status, ticket.status, comment || level);
-    await this.aiTableClient.syncTicket(updated);
-    await this.aiTableClient.syncSatisfaction(updated);
-    await this.aiTableClient.syncTicketLog(log);
+    void log;
 
     if (level === "UNSATISFIED") {
       await this.notifyAdmins(updated, `工单 ${updated.ticketNo} 收到不满意评价，请跟进复盘。`);

@@ -1,6 +1,5 @@
 // 中文注释：通用基础库，封装 Prisma、HTTP 响应、标签映射和前端请求方法。
 import type {
-  AiSyncStatus,
   SatisfactionLevel,
   SendStatus,
   TicketActionType,
@@ -53,20 +52,14 @@ export const actionTypeLabels: Record<TicketActionType, string> = {
   REOPEN: "退回继续处理",
   STATUS_CHANGE: "状态变更",
   SATISFACTION: "满意度评价",
-  SYNC_AI_TABLE_FAILED: "AI表格同步失败",
-  SYNC_AI_TABLE_SUCCESS: "AI表格同步成功"
+  SYNC_AI_TABLE_FAILED: "外部同步失败",
+  SYNC_AI_TABLE_SUCCESS: "外部同步成功"
 };
 
 export const satisfactionLabels: Record<SatisfactionLevel, string> = {
   SATISFIED: "满意",
   NORMAL: "一般",
   UNSATISFIED: "不满意"
-};
-
-export const aiSyncStatusLabels: Record<AiSyncStatus, string> = {
-  PENDING: "待同步",
-  SUCCESS: "成功",
-  FAILED: "失败"
 };
 
 export const sendStatusLabels: Record<SendStatus, string> = {
@@ -92,7 +85,7 @@ export const ticketCategorySeeds = [
   { name: "网络问题", firstResponseMinutes: 30, resolveMinutes: 240, sortOrder: 20 },
   { name: "打印机问题", firstResponseMinutes: 60, resolveMinutes: 480, sortOrder: 30 },
   { name: "钉钉问题", firstResponseMinutes: 120, resolveMinutes: 1440, sortOrder: 40 },
-  { name: "AI表格问题", firstResponseMinutes: 120, resolveMinutes: 2880, sortOrder: 50 },
+  { name: "在线表格问题", firstResponseMinutes: 120, resolveMinutes: 2880, sortOrder: 50 },
   { name: "系统账号问题", firstResponseMinutes: 240, resolveMinutes: 1440, sortOrder: 60 },
   { name: "软件安装", firstResponseMinutes: 240, resolveMinutes: 1440, sortOrder: 70 },
   { name: "RPA/自动化问题", firstResponseMinutes: 480, resolveMinutes: 4320, sortOrder: 80 },

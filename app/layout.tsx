@@ -6,7 +6,7 @@ import "./globals.css";
 
 export const metadata: Metadata = {
   title: "趣然工单系统",
-  description: "公司内部 IT 工单提交、流转、通知与 AI 表格同步"
+  description: "公司内部 IT 工单提交、流转、处理与通知"
 };
 
 export default function RootLayout({ children }: { children: React.ReactNode }) {

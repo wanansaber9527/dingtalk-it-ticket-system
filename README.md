@@ -1,6 +1,14 @@
 # 趣然工单系统
 
-公司内部使用的 IT 工单管理系统，入口面向钉钉 H5/工作台。第一阶段默认使用 SQLite 和 Mock 钉钉/AI 表格调用，可本地快速运行；真实钉钉 OpenAPI 路径、AI 表格 BaseId/TableId 和字段映射均集中配置。
+公司内部使用的 IT 工单管理系统，入口面向钉钉 H5/工作台。当前数据库使用 MySQL，钉钉 OpenAPI 路径保持集中配置，便于按官方文档补齐或调整。
+
+## 当前版本说明
+
+- 系统名称：趣然工单系统
+- 核心定位：钉钉内使用的企业 IT 工单提交、分派、处理、通知与统计系统
+- 当前版本已移除 AI 表格同步功能，不再展示 AI 同步日志入口和相关接口
+- 首页看板支持「原样式」和「图形化样式」两种展示方式
+- 图形化看板基于系统真实工单数据展示状态分布、分类排行和执行人处理排行
 
 ## 项目目录结构
 
@@ -27,7 +35,7 @@
 └── src
     ├── lib                         # Prisma、HTTP、标签与客户端请求
     └── server
-        ├── dingtalk                # DingTalkClient、DingTalkAiTableClient、字段映射
+        ├── dingtalk                # DingTalkClient
         └── services                # 工单、分类、通知、知识库、看板、用户服务
 ```
 
@@ -36,16 +44,15 @@
 - Next.js App Router / React / TypeScript
 - Ant Design
 - Prisma ORM
-- SQLite 默认本地运行，后续可切换 MySQL/PostgreSQL
+- MySQL 8.x
 
 ## 核心能力
 
 - 钉钉用户识别：`src/server/services/dingtalkAuthService.ts`
 - 员工提交工单、我的工单、详情、补充说明、确认、退回、评价
-- 管理员看板、工单管理、分派、转交、处理、关闭、重新同步 AI 表格
+- 管理员看板、图形化看板、工单管理、分派、转交、处理、关闭
 - 分类配置、默认处理人、SLA 时限
 - 钉钉工作通知封装和通知记录
-- AI 表格同步封装、失败日志、单条/批量重试
 - 结构化知识库管理与员工搜索
 - 后端角色权限校验
 
@@ -59,7 +66,6 @@
 - `TicketCategory`
 - `KnowledgeBase`
 - `Notification`
-- `AiTableSyncLog`
 - `SystemConfig`
 
 ## REST API
@@ -86,7 +92,6 @@
 - `POST /api/admin/tickets/:id/status`
 - `POST /api/admin/tickets/:id/resolve`
 - `POST /api/admin/tickets/:id/close`
-- `POST /api/admin/tickets/:id/sync-ai-table`
 - `GET /api/admin/categories`
 - `POST /api/admin/categories`
 - `PUT /api/admin/categories/:id`
@@ -95,9 +100,6 @@
 - `PUT /api/admin/knowledge-base/:id`
 - `GET /api/admin/notifications`
 - `POST /api/admin/notifications/:id/resend`
-- `GET /api/admin/ai-sync-logs`
-- `POST /api/admin/ai-sync-logs`
-- `POST /api/admin/ai-sync-logs/:id/retry`
 - `GET /api/admin/users`
 - `PUT /api/admin/users/:id/role`
 
@@ -107,30 +109,9 @@
 - `POST /api/dingtalk/callback`
 - `POST /api/dingtalk/notify-test`
 
-## 钉钉与 AI 表格封装
+## 钉钉封装
 
 - 钉钉用户、access token、工作通知封装：`src/server/dingtalk/DingTalkClient.ts`
-- AI 表格记录新增、更新、查询、同步与重试：`src/server/dingtalk/DingTalkAiTableClient.ts`
-- AI 表格字段映射集中配置：`src/server/dingtalk/aiTableMappings.ts`
-
-AI 表格接口路径没有硬编码。请在 `.env` 中补齐：
-
-- `DINGTALK_AI_TABLE_API_BASE_URL`
-- `DINGTALK_AI_TABLE_INSERT_RECORD_PATH`
-- `DINGTALK_AI_TABLE_UPDATE_RECORD_PATH`
-- `DINGTALK_AI_TABLE_LIST_RECORDS_PATH`
-
-路径支持占位符：`{baseId}`、`{tableId}`、`{recordId}`。
-
-## AI 表格字段映射
-
-已集中映射以下 Sheet：
-
-- IT工单主表：工单编号、标题、申请人、部门、分类、紧急程度、状态、处理人、SLA、描述、附件、结果、满意度等
-- 工单流转日志表：工单编号、操作时间、操作人、操作类型、原状态、新状态、备注
-- 工单分类配置表：分类名称、默认处理人、首响时限、完成时限、是否启用
-- 知识库表：知识编号、标题、分类、适用部门、描述、步骤、来源工单、维护人、是否启用、更新时间
-- 满意度评价表：工单编号、申请人、处理人、满意度、评价原因、评价时间
 
 ## 本地启动
 
@@ -141,12 +122,7 @@ npm run db:seed
 npm run dev
 ```
 
-如果本机 Prisma 没有自动创建 SQLite 文件，可先执行：
-
-```bash
-touch prisma/dev.db
-npm run db:push
-```
+启动前请先在 `.env` 中配置可用的 MySQL `DATABASE_URL`。
 
 打开：
 
@@ -169,7 +145,6 @@ npm run init:admin -- --userId <钉钉userId> --name <姓名>
 DEV_AUTH_ENABLED="true"
 DEV_DINGTALK_USER_ID="demo-super"
 DINGTALK_MOCK_ENABLED="true"
-DINGTALK_AI_TABLE_MOCK_ENABLED="true"
 ```
 
 真实接入时关闭 mock，并从钉钉免登入口进入系统。

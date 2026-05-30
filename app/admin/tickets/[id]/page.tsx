@@ -10,8 +10,7 @@ import {
   CommentOutlined,
   ReloadOutlined,
   SendOutlined,
-  SwapOutlined,
-  SyncOutlined
+  SwapOutlined
 } from "@ant-design/icons";
 import { TicketStatusTag } from "@/components/tickets/TicketStatusTag";
 import { actionTypeLabels, priorityLabels, ticketStatusLabels } from "@/src/lib/labels";
@@ -47,8 +46,6 @@ type Ticket = {
   resultSummary?: string;
   satisfactionLevel?: string;
   satisfactionComment?: string;
-  aiSyncStatus: string;
-  aiSyncError?: string;
   createdAt: string;
   slaFirstResponseDeadline?: string;
   slaResolveDeadline?: string;
@@ -142,10 +139,6 @@ export default function AdminTicketDetailPage() {
               <Descriptions.Item label="工单编号">{ticket.ticketNo}</Descriptions.Item>
               <Descriptions.Item label="当前状态">
                 <TicketStatusTag status={ticket.status} />
-              </Descriptions.Item>
-              <Descriptions.Item label="AI同步">
-                {ticket.aiSyncStatus}
-                {ticket.aiSyncError ? `：${ticket.aiSyncError}` : ""}
               </Descriptions.Item>
               <Descriptions.Item label="标题">{ticket.title}</Descriptions.Item>
               <Descriptions.Item label="分类">{ticket.categoryName}</Descriptions.Item>
@@ -262,9 +255,6 @@ export default function AdminTicketDetailPage() {
                     </Button>
                     {isSuperAdmin && (
                       <>
-                        <Button icon={<SyncOutlined />} onClick={() => run(`/api/admin/tickets/${ticket.id}/sync-ai-table`)}>
-                          重新同步AI表格
-                        </Button>
                         <Space size={8} wrap>
                           <Checkbox checked={silentDelete} onChange={(event) => setSilentDelete(event.target.checked)}>
                             静默删除

@@ -1,6 +1,7 @@
 {
   "name": "dingtalk-it-ticket-system",
   "version": "0.1.0",
+  "description": "趣然工单系统，面向钉钉 H5 的企业 IT 工单提交、处理、通知与统计看板系统",
   "private": true,
   "scripts": {
     "dev": "next dev",
@@ -21,6 +22,7 @@
     "next": "^15.3.2",
     "react": "^19.1.0",
     "react-dom": "^19.1.0",
+    "recharts": "^3.8.1",
     "zod": "^3.24.4"
   },
   "devDependencies": {

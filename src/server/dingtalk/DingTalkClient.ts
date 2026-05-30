@@ -1,4 +1,4 @@
-// 中文注释：钉钉集成封装，集中处理钉钉开放平台和 AI 表格同步相关逻辑。
+// 中文注释：钉钉集成封装，集中处理钉钉开放平台身份、通讯录和工作通知。
 type FetchOptions = {
   method?: "GET" | "POST" | "PUT";
   body?: unknown;

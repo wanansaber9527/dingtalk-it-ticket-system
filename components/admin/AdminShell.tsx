@@ -6,7 +6,6 @@ import {
   BellOutlined,
   BookOutlined,
   DashboardOutlined,
-  DatabaseOutlined,
   FolderOutlined,
   FormOutlined,
   HomeOutlined,
@@ -31,7 +30,6 @@ const items = [
   { key: "/admin/categories", icon: <FolderOutlined />, label: <Link href="/admin/categories">分类配置</Link> },
   { key: "/admin/knowledge-base", icon: <BookOutlined />, label: <Link href="/admin/knowledge-base">知识库</Link> },
   { key: "/admin/notifications", icon: <BellOutlined />, label: <Link href="/admin/notifications">通知记录</Link> },
-  { key: "/admin/ai-sync-logs", icon: <DatabaseOutlined />, label: <Link href="/admin/ai-sync-logs">AI同步日志</Link> },
   { key: "/admin/users", icon: <TeamOutlined />, label: <Link href="/admin/users">权限管理</Link> },
   { key: "/tickets/new", icon: <HomeOutlined />, label: <Link href="/tickets/new">员工端</Link> }
 ];

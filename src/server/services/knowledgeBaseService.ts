@@ -3,7 +3,6 @@ import type { KnowledgeBase, PrismaClient } from "@prisma/client";
 import { prisma as defaultPrisma } from "@/src/lib/prisma";
 import { requireRole } from "@/src/server/permissions";
 import type { UserWithRoles } from "@/src/lib/userRoles";
-import { DingTalkAiTableClient } from "@/src/server/dingtalk/DingTalkAiTableClient";
 
 export type KnowledgeBaseInput = {
   title: string;
@@ -22,10 +21,7 @@ function kbNo() {
 }
 
 export class KnowledgeBaseService {
-  constructor(
-    private readonly prisma: PrismaClient = defaultPrisma,
-    private readonly aiTableClient = new DingTalkAiTableClient(prisma)
-  ) {}
+  constructor(private readonly prisma: PrismaClient = defaultPrisma) {}
 
   async search(keyword?: string, categoryId?: string) {
     const where = {
@@ -92,7 +88,6 @@ export class KnowledgeBaseService {
         enabled: input.enabled ?? false
       }
     });
-    if (kb.enabled) await this.aiTableClient.syncKnowledgeBase(kb);
     return kb;
   }
 
@@ -122,7 +117,6 @@ export class KnowledgeBaseService {
         enabled: input.enabled ?? existing.enabled
       }
     });
-    if (kb.enabled) await this.aiTableClient.syncKnowledgeBase(kb);
     return kb;
   }
 }
