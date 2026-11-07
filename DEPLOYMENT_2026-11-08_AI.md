@@ -31,4 +31,35 @@ AI 助手成为默认首页，支持分类前置提示词、对话与附件上�
 
 ## 发布状态
 
-准备发布与验收中。最终版本、检查结果及备份位置在完成后更新。
+已于 **2026-11-08 06:02（北京时间）**完成发布与进程收尾。
+
+- 正式入口：<https://it.qurands.com:38443/ai-assistant>，在钉钉内重新进入。
+- 发布版本：`20261108-055048-ai-suite`；应用源码提交：`625b7bf509aba6103343954782f7e070adbf8b05`。
+- 构建 ID：`vFSyrtMubtI8yShUdjSDf`。
+- GitHub `main` 已更新应用源码；本发布记录随后单独提交，不改变运行代码。
+- 主服务与人员同步进程均在线，worker连续观察70秒、重启次数0；PM2已保存，候选进程已移除。
+- 服务器备份：`/www/wwwroot/it.qurands.com/backups/release-20261108-055048-ai-suite/`。旧release/shared归档及数据库gzip校验通过；备份和凭据只留服务器受限目录。
+
+## 本次验证
+
+- 本地279项测试全部通过（0失败、0跳过），TypeScript及ESLint通过；服务器Linux依赖安装、Prisma生成及生产构建通过。
+- 42条增量SQL应用完成，数据库结构与当前Prisma schema diff为空。211名人员、97张工单、351条处理日志、553条通知、213条角色关系数量保持；211个真实企业身份绑定建立，97条提交人、97条处理人和553条通知内部身份回填，17名原停用人员保留人工停用。
+- 切换后再次幂等回填，处理旧Web在候选验证期间新增记录的可能性。
+- 候选99项检查、正式服务97项检查及公网49项检查通过，含v3认证、权限、配置不泄密、原工单与附件、Markdown和建议资源。
+- 公网合成AI验收返回两条相关建议；首事件169ms，完整回答3380ms，189个正文增量，流式代理有效。只创建并清理专属合成AI验收对话，没有创建测试工单、发送通知或修改人员状态。
+- 新主服务错误日志0字节；worker错误日志0字节。真实钉钉交互登录及工单提交通知流转未作人工验收。
+
+## 钉钉上游权限限制
+
+真实通讯录读取通过，返回194条人员记录。离职记录只读联调返回HTTP403，错误码 `Forbidden.AccessDenied.AccessTokenPermissionDenied`，明确缺少 **`Contact.Common.Read`**。自动同步进程已开启（默认60分钟），但自动识别离职需应用管理员补开该权限；缺少明确离职依据时系统保留人员并记录待核实，不会仅凭目录缺失批量归档。此次未修改钉钉应用权限。
+
+## 本次回退命令
+
+```sh
+ssh -i "$HOME/.ssh/codex_itdesk_deploy" -o IdentitiesOnly=yes -p 31022 itdesk@rd.qurands.com \
+  'node /www/wwwroot/it.qurands.com/backups/release-20261108-055048-ai-suite/switch-release.cjs /www/wwwroot/it.qurands.com/backups/release-20261108-055048-ai-suite/context.json --rollback'
+```
+
+脚本先停止新版worker，核验尚无人员身份审计且原外部身份映射未改变，再切回旧Web并保存PM2；若身份已变更会拒绝直接回退，需专门兼容处理。不会恢复旧数据库、清除新业务记录或替换共享附件。本次未实际执行生产回退。
+
+脱敏验收报告在本地 `output/deployment-2026-11-08-ai-suite/`，该目录不进入GitHub。
