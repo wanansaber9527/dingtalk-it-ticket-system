@@ -1,0 +1,69 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "mysql"
+  url      = env("DATABASE_URL")
+}
+
+enum TicketPriority {
+  LOW
+  NORMAL
+  HIGH
+  URGENT
+}
+
+enum TicketStatus {
+  PENDING
+  ASSIGNED
+  PROCESSING
+  RETURNED
+  COMPLETED
+  CLOSED
+  REJECTED
+  CANCELLED
+}
+
+enum SatisfactionLevel {
+  SATISFIED
+  NORMAL
+  UNSATISFIED
+}
+
+model Ticket {
+  id                       String             @id @default(cuid())
+  ticketNo                 String             @unique
+  title                    String
+  categoryId               String?
+  categoryName             String
+  priority                 TicketPriority     @default(NORMAL)
+  status                   TicketStatus       @default(PENDING)
+  applicantUserId          String
+  applicantName            String
+  applicantDepartment      String?
+  applicantPosition        String?
+  handlerUserId            String?
+  handlerName              String?
+  description              String             @db.Text
+  attachments              String?            @db.Text
+  expectedResolveTime      DateTime?
+  firstResponseAt          DateTime?
+  resolvedAt               DateTime?
+  closedAt                 DateTime?
+  slaFirstResponseDeadline DateTime?
+  slaResolveDeadline       DateTime?
+  isFirstResponseOverdue   Boolean            @default(false)
+  isResolveOverdue         Boolean            @default(false)
+  resultSummary            String?            @db.Text
+  satisfactionLevel        SatisfactionLevel?
+  satisfactionComment      String?            @db.Text
+  createdAt                DateTime           @default(now())
+  updatedAt                DateTime           @updatedAt
+
+  @@index([status])
+  @@index([handlerUserId])
+  @@index([applicantUserId])
+  @@index([createdAt])
+  @@map("Ticket")
+}

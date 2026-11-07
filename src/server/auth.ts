@@ -1,7 +1,9 @@
 // 中文注释：服务端基础能力，处理身份识别和权限判断。
-import crypto from "crypto";
 import { prisma } from "@/src/lib/prisma";
 import { AppError } from "@/src/lib/http";
+import { isDevelopmentAuthEnabled } from "@/src/server/auth-config";
+import { assertAuthConfiguration, verifyAuthSession } from "@/src/server/auth-session";
+export { createAuthCookieValue } from "@/src/server/auth-session";
 
 type CurrentUserOptions = {
   unauthorizedMessage?: string;
@@ -18,28 +20,11 @@ function readCookie(request: Request, name: string) {
     .split(";")
     .map((item) => item.trim())
     .find((item) => item.startsWith(`${name}=`));
-  return pair ? decodeURIComponent(pair.split("=").slice(1).join("=")) : null;
-}
-
-function authSecret() {
-  return process.env.AUTH_COOKIE_SECRET || process.env.DINGTALK_CLIENT_SECRET || "local-dev-auth-secret";
-}
-
-function sign(value: string) {
-  return crypto.createHmac("sha256", authSecret()).update(value).digest("base64url");
-}
-
-export function createAuthCookieValue(dingtalkUserId: string) {
-  const userId = Buffer.from(dingtalkUserId, "utf8").toString("base64url");
-  return `${userId}.${sign(userId)}`;
-}
-
-function readSignedUserId(request: Request) {
-  const session = readCookie(request, "it_session");
-  if (!session) return null;
-  const [encodedUserId, signature] = session.split(".");
-  if (!encodedUserId || !signature || sign(encodedUserId) !== signature) return null;
-  return Buffer.from(encodedUserId, "base64url").toString("utf8");
+  try {
+    return pair ? decodeURIComponent(pair.split("=").slice(1).join("=")) : null;
+  } catch {
+    return null;
+  }
 }
 
 function findUserWithRoles(dingtalkUserId: string) {
@@ -65,25 +50,23 @@ async function ensureUserRole(userId: string, role: "EMPLOYEE" | "SUPER_ADMIN") 
 }
 
 export async function getCurrentUser(request: Request, options: CurrentUserOptions = {}) {
+  assertAuthConfiguration();
   // 中文注释：正式环境只信任后端签发的免登 cookie，避免用户通过 header/query 伪造身份。
   const url = new URL(request.url);
-  const devAuthEnabled = process.env.DEV_AUTH_ENABLED === "true";
-  const userId =
-    readSignedUserId(request) ??
-    (devAuthEnabled
-      ? readHeader(request, "x-dingtalk-userid") ??
-        url.searchParams.get("dingtalkUserId") ??
-        readCookie(request, "it_userid")
-      : null);
-
-  if (userId) {
-    const user = await findUserWithRoles(userId);
-    if (!user) {
-      throw new AppError(401, "USER_NOT_FOUND", "未找到当前钉钉用户，请重新从钉钉进入系统");
+  const devAuthEnabled = isDevelopmentAuthEnabled();
+  const session = verifyAuthSession(readCookie(request, "it_session"));
+  const developmentUserId = devAuthEnabled
+    ? readHeader(request, "x-dingtalk-userid") ?? url.searchParams.get("dingtalkUserId") ?? readCookie(request, "it_userid")
+    : null;
+  if (session || developmentUserId) {
+    const user = session
+      ? await prisma.user.findUnique({ where: { id: session.userId }, include: { roleAssignments: true } })
+      : await findUserWithRoles(developmentUserId!);
+    if (!user) throw new AppError(401, "USER_NOT_FOUND", "未找到当前用户，请重新从钉钉进入系统");
+    if (user.status !== "ACTIVE" || user.employmentStatus === "DEPARTED" || user.mergedIntoId || user.manuallyDisabled) {
+      throw new AppError(403, "USER_DISABLED", "当前用户已离职或被禁用");
     }
-    if (user.status !== "ACTIVE") {
-      throw new AppError(403, "USER_DISABLED", "当前用户已被禁用");
-    }
+    if (session && session.sessionVersion !== user.sessionVersion) throw new AppError(401, "SESSION_REVOKED", "登录状态已失效，请重新从钉钉进入系统");
     return user;
   }
 
@@ -108,6 +91,7 @@ export async function getCurrentUser(request: Request, options: CurrentUserOptio
         position: process.env.DEV_USER_POSITION || null
       }
     });
+    if (user.status !== "ACTIVE" || user.employmentStatus === "DEPARTED" || user.mergedIntoId || user.manuallyDisabled) throw new AppError(403, "USER_DISABLED", "当前用户已被禁用");
     await ensureUserRole(user.id, "EMPLOYEE");
     await ensureUserRole(user.id, "SUPER_ADMIN");
     return findUserWithRolesOrThrow(dingtalkUserId);

@@ -2,8 +2,8 @@
 
 // 中文注释：管理员后台页面，展示和操作 IT 工单系统管理能力。
 
-import { useEffect, useState } from "react";
-import { Button, Space, Table, Typography, message } from "antd";
+import { useCallback, useEffect, useRef, useState } from "react";
+import { Button, Space, Table, Typography, App as AntApp } from "antd";
 import { ReloadOutlined, SendOutlined } from "@ant-design/icons";
 import { apiGet, apiPost } from "@/src/lib/clientApi";
 import { notificationTypeLabels, sendStatusLabels } from "@/src/lib/labels";
@@ -20,22 +20,28 @@ type Notification = {
 };
 
 export default function NotificationsPage() {
+  const { message } = AntApp.useApp();
   const [items, setItems] = useState<Notification[]>([]);
 
-  const load = () => {
-    apiGet<Notification[]>("/api/admin/notifications").then(setItems).catch((error) => message.error(error.message));
-  };
-
-  useEffect(load, []);
+  const [loading, setLoading] = useState(true);
+  const [sending, setSending] = useState<string | null>(null);
+  const sendingRef = useRef(false);
+  const load = useCallback(() => {
+    setLoading(true);
+    return apiGet<Notification[]>("/api/admin/notifications").then(setItems).catch((error) => message.error(error.message)).finally(() => setLoading(false));
+  }, [message]);
+  useEffect(() => { void load(); }, [load]);
 
   async function resend(id: string) {
+    if (sendingRef.current) return;
+    sendingRef.current = true; setSending(id);
     try {
       await apiPost(`/api/admin/notifications/${id}/resend`);
       message.success("已重新发送");
       load();
     } catch (error) {
       message.error(error instanceof Error ? error.message : "发送失败");
-    }
+    } finally { sendingRef.current = false; setSending(null); }
   }
 
   return (
@@ -48,11 +54,12 @@ export default function NotificationsPage() {
       </div>
       <div className="content-band">
         <div className="toolbar">
-          <Button icon={<ReloadOutlined />} onClick={load}>
+          <Button icon={<ReloadOutlined />} onClick={load} loading={loading}>
             刷新
           </Button>
         </div>
         <Table
+          loading={loading}
           rowKey="id"
           dataSource={items}
           scroll={{ x: 1100 }}
@@ -74,7 +81,7 @@ export default function NotificationsPage() {
               width: 120,
               fixed: "right",
               render: (_, record) => (
-                <Button size="small" icon={<SendOutlined />} onClick={() => resend(record.id)}>
+                <Button size="small" loading={sending === record.id} disabled={sending !== null && sending !== record.id} icon={<SendOutlined />} onClick={() => resend(record.id)}>
                   重发
                 </Button>
               )

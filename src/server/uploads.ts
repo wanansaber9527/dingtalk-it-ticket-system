@@ -1,74 +1,78 @@
-// 中文注释：上传文件的服务端校验和读取工具，避免业务路由里散落文件系统细节。
-import path from "path";
+import { prisma } from "@/src/lib/prisma";
 import { AppError } from "@/src/lib/http";
+import { canViewTicket, hasAnyRole, requireActiveUser } from "@/src/server/permissions";
+import type { UserWithRoles } from "@/src/lib/userRoles";
+import { findUploadFile, imageContentTypeFromName, readUploadOwner, safeUploadFileName } from "@/src/server/upload-storage";
 
-const allowedImageTypes = new Set([
-  "image/jpeg",
-  "image/png",
-  "image/gif",
-  "image/webp",
-  "image/bmp",
-  "image/heic",
-  "image/heif"
-]);
+export { getUploadDir, imageContentTypeFromName, safeUploadFileName } from "@/src/server/upload-storage";
 
-const allowedImageExtensions = new Set([".jpg", ".jpeg", ".png", ".gif", ".webp", ".bmp", ".heic", ".heif"]);
-
-const contentTypesByExt: Record<string, string> = {
-  ".jpg": "image/jpeg",
-  ".jpeg": "image/jpeg",
-  ".png": "image/png",
-  ".gif": "image/gif",
-  ".webp": "image/webp",
-  ".bmp": "image/bmp",
-  ".heic": "image/heic",
-  ".heif": "image/heif"
-};
-
-export function getUploadDir() {
-  return process.env.UPLOAD_DIR || path.join(process.cwd(), "public", "uploads");
+function fileNameFromUrl(value: unknown, newAttachment = false): string | null {
+  if (typeof value !== "string" || value.length > 2048 || value.includes("\\")) return null;
+  try {
+    const base = new URL(process.env.APP_BASE_URL || "http://local.invalid");
+    const url = new URL(value, base);
+    if (!["http:", "https:"].includes(url.protocol)) return null;
+    if (newAttachment && (url.origin !== base.origin || value.startsWith("//"))) return null;
+    const match = /^\/(?:api\/)?uploads\/([^/]+)$/.exec(url.pathname);
+    return match ? safeUploadFileName(match[1]) : null;
+  } catch { return null; }
 }
 
-export function safeUploadFileName(fileName: string) {
-  const decoded = decodeURIComponent(fileName);
-  const baseName = path.basename(decoded);
-  if (!baseName || baseName !== decoded || !/^[a-zA-Z0-9._-]+$/.test(baseName)) {
-    throw new AppError(400, "INVALID_UPLOAD_NAME", "附件名称无效");
+function includesFile(serialized: string | null, fileName: string) {
+  if (!serialized) return false;
+  try {
+    const items: unknown = JSON.parse(serialized);
+    return Array.isArray(items) && items.some((item) => fileNameFromUrl(typeof item === "string" ? item : item?.url) === fileName);
+  } catch { return false; }
+}
+
+async function ownsUnattachedUpload(fileName: string, user: UserWithRoles) {
+  const ownerId = await readUploadOwner(fileName);
+  if (!ownerId) return false;
+  if (ownerId === user.dingtalkUserId) return true;
+  // 返聘后附件元数据仍保留上传时的外部账号。仅使用当前企业内已核验的
+  // 身份绑定找回同一个永久人员 ID；旧绑定可以 inactive，但不能跨企业/跨人员。
+  const corpId = process.env.DINGTALK_CORP_ID?.trim() ||
+    (process.env.NODE_ENV !== "production" && process.env.DINGTALK_MOCK_ENABLED === "true" ? "local-corp" : "");
+  if (!corpId) return false;
+  return Boolean(await prisma.userIdentity.findFirst({
+    where: { corpId, externalUserId: ownerId, userId: user.id },
+    select: { id: true }
+  }));
+}
+
+export async function requireCanReadUpload(fileName: string, user: UserWithRoles) {
+  requireActiveUser(user);
+  const safeName = safeUploadFileName(fileName);
+  if (hasAnyRole(user, ["SUPER_ADMIN"])) return;
+  // 旧附件既可能存于工单，也可能存于补充说明日志。模糊查询后必须精确核对 JSON URL。
+  const tickets = await prisma.ticket.findMany({
+    where: { OR: [{ attachments: { contains: safeName } }, { logs: { some: { attachments: { contains: safeName } } } }] },
+    select: { applicantId: true, handlerId: true, applicantUserId: true, handlerUserId: true, ccRecipients: { select: { personId: true, userId: true } }, attachments: true, logs: { where: { attachments: { contains: safeName } }, select: { attachments: true } } }
+  });
+  const linked = tickets.filter((ticket) => includesFile(ticket.attachments, safeName) || ticket.logs.some((log) => includesFile(log.attachments, safeName)));
+  if (linked.length) {
+    if (linked.some((ticket) => canViewTicket(user, ticket))) return;
+  } else if (await ownsUnattachedUpload(safeName, user)) {
+    return;
   }
-  return baseName;
+  throw new AppError(403, "UPLOAD_FORBIDDEN", "无权访问该工单附件");
 }
 
-export function imageContentTypeFromName(fileName: string) {
-  return contentTypesByExt[path.extname(fileName).toLowerCase()] || "application/octet-stream";
-}
+export type ValidatedAttachment = { name: string; url: string; size: number; type: string };
 
-export function imageExtensionFromFile(file: File) {
-  const ext = path.extname(file.name).toLowerCase();
-  if (allowedImageExtensions.has(ext)) return ext;
-  const matched = Object.entries(contentTypesByExt).find(([, contentType]) => contentType === file.type.toLowerCase());
-  return matched?.[0] || ".jpg";
-}
-
-export function isSupportedClientImage(file: Pick<File, "name" | "type">) {
-  const type = file.type.toLowerCase();
-  const ext = path.extname(file.name).toLowerCase();
-  return allowedImageTypes.has(type) || (!type && allowedImageExtensions.has(ext));
-}
-
-export function isSupportedImageBuffer(file: Pick<File, "name" | "type">, buffer: Buffer) {
-  const type = file.type.toLowerCase();
-  const ext = path.extname(file.name).toLowerCase();
-  if (allowedImageTypes.has(type) && allowedImageExtensions.has(ext)) return true;
-  if (buffer.length >= 4 && buffer[0] === 0xff && buffer[1] === 0xd8 && buffer[2] === 0xff) return true;
-  if (buffer.subarray(0, 8).equals(Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]))) return true;
-  if (buffer.subarray(0, 6).toString("ascii") === "GIF87a" || buffer.subarray(0, 6).toString("ascii") === "GIF89a") return true;
-  if (buffer.subarray(0, 4).toString("ascii") === "RIFF" && buffer.subarray(8, 12).toString("ascii") === "WEBP") return true;
-  if (buffer.subarray(0, 2).toString("ascii") === "BM") return true;
-  if (buffer.subarray(4, 8).toString("ascii") === "ftyp") {
-    const brand = buffer.subarray(8, 12).toString("ascii");
-    return ["heic", "heix", "hevc", "hevx", "mif1", "msf1"].includes(brand);
+export async function validateOwnedAttachments(value: unknown, user: UserWithRoles): Promise<ValidatedAttachment[] | undefined> {
+  if (value === undefined || value === null) return undefined;
+  if (!Array.isArray(value) || value.length > 10) throw new AppError(400, "INVALID_ATTACHMENTS", "每次最多上传 10 张图片");
+  const result: ValidatedAttachment[] = [];
+  for (const attachment of value) {
+    const fileName = fileNameFromUrl(attachment?.url, true);
+    if (!attachment || typeof attachment !== "object" || !fileName || typeof attachment.name !== "string" || !attachment.name.trim() || attachment.name.length > 255) {
+      throw new AppError(400, "INVALID_ATTACHMENTS", "附件必须是通过本系统上传的图片");
+    }
+    await requireCanReadUpload(fileName, user);
+    const file = await findUploadFile(fileName);
+    result.push({ name: attachment.name.trim(), url: `/api/uploads/${encodeURIComponent(fileName)}`, size: file.size, type: imageContentTypeFromName(fileName) });
   }
-  return false;
+  return result;
 }
-
-export const imageUploadTip = "仅支持 JPG、PNG、GIF、WebP、BMP、HEIC 图片";

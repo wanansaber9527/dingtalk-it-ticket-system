@@ -1,6 +1,6 @@
 // 中文注释：Next.js API 路由，负责接收请求、校验身份并调用对应服务层。
 import { getCurrentUser } from "@/src/server/auth";
-import { fail, ok } from "@/src/lib/http";
+import { AppError, fail, ok } from "@/src/lib/http";
 import { UserService } from "@/src/server/services/userService";
 
 export async function GET(request: Request) {
@@ -17,7 +17,9 @@ export async function GET(request: Request) {
     if (url.searchParams.get("role") === "executors") {
       return ok(await service.executors(user));
     }
-    return ok(await service.list(user, url.searchParams.get("keyword") || undefined));
+    const employment = url.searchParams.get("employment") || "ACTIVE";
+    if (!["ACTIVE", "DEPARTED", "ALL"].includes(employment)) throw new AppError(400, "INVALID_EMPLOYMENT", "人员状态无效");
+    return ok(await service.list(user, url.searchParams.get("keyword") || undefined, employment as "ACTIVE" | "DEPARTED" | "ALL"));
   } catch (error) {
     return fail(error);
   }

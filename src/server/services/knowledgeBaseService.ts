@@ -3,6 +3,7 @@ import type { KnowledgeBase, PrismaClient } from "@prisma/client";
 import { prisma as defaultPrisma } from "@/src/lib/prisma";
 import { requireRole } from "@/src/server/permissions";
 import type { UserWithRoles } from "@/src/lib/userRoles";
+import { knowledgeBaseNumber, retryNumberConflict } from "./serviceHelpers";
 
 export type KnowledgeBaseInput = {
   title: string;
@@ -13,12 +14,6 @@ export type KnowledgeBaseInput = {
   sourceTicketId?: string | null;
   enabled?: boolean;
 };
-
-function kbNo() {
-  const now = new Date();
-  const stamp = `${now.getFullYear()}${String(now.getMonth() + 1).padStart(2, "0")}${String(now.getDate()).padStart(2, "0")}`;
-  return `KB${stamp}${Math.random().toString(16).slice(2, 6).toUpperCase()}`;
-}
 
 export class KnowledgeBaseService {
   constructor(private readonly prisma: PrismaClient = defaultPrisma) {}
@@ -72,9 +67,9 @@ export class KnowledgeBaseService {
       ? await this.prisma.ticket.findUnique({ where: { id: input.sourceTicketId } })
       : null;
 
-    const kb = await this.prisma.knowledgeBase.create({
+    const kb = await retryNumberConflict(() => this.prisma.knowledgeBase.create({
       data: {
-        kbNo: kbNo(),
+        kbNo: knowledgeBaseNumber(),
         title: input.title,
         categoryId: category?.id || null,
         categoryName: category?.name || null,
@@ -87,7 +82,7 @@ export class KnowledgeBaseService {
         maintainerName: operator.name,
         enabled: input.enabled ?? false
       }
-    });
+    }), "kbNo");
     return kb;
   }
 

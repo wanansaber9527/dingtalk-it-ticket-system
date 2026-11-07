@@ -2,7 +2,9 @@
 import type { TicketStatus } from "@prisma/client";
 import { getCurrentUser } from "@/src/server/auth";
 import { fail, ok } from "@/src/lib/http";
-import { TicketService } from "@/src/server/services/ticketService";
+import { TicketService, type TicketListFilters } from "@/src/server/services/ticketService";
+
+import { parsePagination } from "@/src/server/services/serviceHelpers";
 
 export async function GET(request: Request) {
   try {
@@ -13,13 +15,17 @@ export async function GET(request: Request) {
       await service.listAdminTickets(
         {
           status: (url.searchParams.get("status") || undefined) as TicketStatus | undefined,
+          statusGroup: (url.searchParams.get("statusGroup") || undefined) as TicketListFilters["statusGroup"],
           categoryId: url.searchParams.get("categoryId") || undefined,
           applicantDepartment: url.searchParams.get("applicantDepartment") || undefined,
           handlerUserId: url.searchParams.get("handlerUserId") || undefined,
+          needsReassignment: url.searchParams.get("needsReassignment") === "true",
           overdue: url.searchParams.get("overdue") === "true",
-          keyword: url.searchParams.get("keyword") || undefined
+          keyword: url.searchParams.get("keyword") || undefined,
+          includeStats: url.searchParams.get("includeStats") === "true"
         },
-        user
+        user,
+        parsePagination(url.searchParams)
       )
     );
   } catch (error) {

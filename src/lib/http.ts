@@ -24,18 +24,19 @@ export function fail(error: unknown) {
     );
   }
 
-  const message = error instanceof Error ? error.message : "服务异常";
   console.error(error);
   return NextResponse.json(
-    { success: false, code: "INTERNAL_ERROR", message },
+    { success: false, code: "INTERNAL_ERROR", message: "服务暂时异常，请稍后重试" },
     { status: 500 }
   );
 }
 
 export async function parseJson<T>(request: Request): Promise<T> {
   try {
-    return (await request.json()) as T;
+    const value: unknown = await request.json();
+    if (value === null || typeof value !== "object" || Array.isArray(value)) throw new Error("Expected JSON object");
+    return value as T;
   } catch {
-    return {} as T;
+    throw new AppError(400, "INVALID_JSON", "请求正文必须是有效的 JSON 对象");
   }
 }

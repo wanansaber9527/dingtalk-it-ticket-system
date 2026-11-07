@@ -4,10 +4,13 @@
 
 ## 当前版本说明
 
+- “趣然IT工单智能助手”替换知识库并作为首页：分类问答、图片与历史上下文、对话内提单、管理端“大模型配置”，每轮提供与当前回答关联的继续建议。开发验证见 [AI 助手说明](AI_ASSISTANT_LOCAL.md)。
+- 分类默认抄送、工单抄送快照与只读查看；人员定时同步、离职归档、返聘身份核验及同步日志。同步进程须独立托管，不能仅启动 Web 服务。
+
 - 系统名称：趣然工单系统
 - 核心定位：钉钉内使用的企业 IT 工单提交、分派、处理、通知与统计系统
 - 当前版本已移除 AI 表格同步功能，不再展示 AI 同步日志入口和相关接口
-- 首页看板支持「原样式」和「图形化样式」两种展示方式
+- 首页看板支持「图表概览」和「详细数据」两种展示方式
 - 图形化看板基于系统真实工单数据展示状态分布、分类排行和执行人处理排行
 
 ## 项目目录结构
@@ -116,18 +119,17 @@
 ## 本地启动
 
 ```bash
-npm install
-npm run db:push
-npm run db:seed
-npm run dev
+npm ci
+npm run local:setup
+npm run local:start
 ```
 
-启动前请先在 `.env` 中配置可用的 MySQL `DATABASE_URL`。
+使用独立本地 MySQL 与模拟钉钉身份，不加载项目原有 `.env`。具体环境、账号与验证记录见 [本地测试说明](LOCAL_TESTING.md)。不要对正式数据库运行 `db:seed`。
 
 打开：
 
-- 员工端：`http://localhost:3000/tickets/new`
-- 后台：`http://localhost:3000/admin`
+- 员工端：`http://127.0.0.1:3100/tickets/new`
+- 后台：`http://127.0.0.1:3100/admin`
 
 ## 初始化管理员账号
 
@@ -147,4 +149,6 @@ DEV_DINGTALK_USER_ID="demo-super"
 DINGTALK_MOCK_ENABLED="true"
 ```
 
-真实接入时关闭 mock，并从钉钉免登入口进入系统。
+上述开关仅用于本地开发。正式环境禁止开发身份与 mock，需设置独立随机 `AUTH_COOKIE_SECRET`（至少 32 字节），并在正式构建时提供 `NEXT_PUBLIC_DINGTALK_CORP_ID`。
+
+正式部署使用服务器 Linux 依赖重新构建，保留共享数据库配置与私有 `UPLOAD_DIR`。`public/uploads` 不得放置真实附件或指向旧附件库的软链；新旧附件 URL 均由带权限校验的路由处理。先备份、检查数据库实际结构，再依次应用 AI 助手、继续建议、分类抄送、人员同步增量 SQL；执行生产专用人员关联回填后验证候选服务，再切换 release。禁止用本地 seed 或 `db push` 覆盖生产。详见 [本次发布记录](DEPLOYMENT_2026-11-08_AI.md)。

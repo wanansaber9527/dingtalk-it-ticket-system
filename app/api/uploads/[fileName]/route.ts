@@ -1,26 +1,25 @@
-// 中文注释：附件图片读取接口，避免 Nginx 静态目录与 Next public 目录不一致导致图片无法显示。
 import { readFile } from "fs/promises";
-import path from "path";
-import { AppError, fail } from "@/src/lib/http";
-import { getUploadDir, imageContentTypeFromName, safeUploadFileName } from "@/src/server/uploads";
+import { fail } from "@/src/lib/http";
+import { getCurrentUser } from "@/src/server/auth";
+import { requireCanReadUpload } from "@/src/server/uploads";
+import { findUploadFile, imageContentTypeFromName, safeUploadFileName } from "@/src/server/upload-storage";
 
-export async function GET(_request: Request, context: { params: Promise<{ fileName: string }> }) {
+export const runtime = "nodejs";
+export const dynamic = "force-dynamic";
+
+export async function GET(request: Request, context: { params: Promise<{ fileName: string }> }) {
   try {
+    const user = await getCurrentUser(request);
     const { fileName } = await context.params;
     const safeName = safeUploadFileName(fileName);
-    const uploadDir = getUploadDir();
-    try {
-      const file = await readFile(path.join(uploadDir, safeName));
-      return new Response(file, {
-        headers: {
-          "content-type": imageContentTypeFromName(safeName),
-          "cache-control": "public, max-age=31536000, immutable"
-        }
-      });
-    } catch {
-      throw new AppError(404, "UPLOAD_NOT_FOUND", "附件图片不存在或已被删除");
-    }
-  } catch (error) {
-    return fail(error);
-  }
+    await requireCanReadUpload(safeName, user);
+    const file = await findUploadFile(safeName);
+    return new Response(await readFile(file.location), { headers: {
+      "content-type": imageContentTypeFromName(safeName),
+      "cache-control": "private, no-store, max-age=0",
+      "x-content-type-options": "nosniff",
+      "content-disposition": `inline; filename="${safeName}"`,
+      "vary": "Cookie"
+    } });
+  } catch (error) { return fail(error); }
 }

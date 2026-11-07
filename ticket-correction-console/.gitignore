@@ -1,0 +1,8 @@
+.next/
+node_modules/
+.env
+.env.local
+.env.*.local
+var/audit/*
+!var/audit/.gitkeep
+*.log

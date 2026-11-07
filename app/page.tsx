@@ -1,6 +1,6 @@
-// 中文注释：系统首页入口，默认跳转到员工提交工单页面。
+// 系统首页进入 AI 助手，提交工单仍保留独立入口。
 import { redirect } from "next/navigation";
 
 export default function Home() {
-  redirect("/tickets/new");
+  redirect("/ai-assistant");
 }

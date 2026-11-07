@@ -5,7 +5,7 @@ import { fail, ok } from "@/src/lib/http";
 export async function GET() {
   try {
     const service = new CategoryService();
-    return ok(await service.list(true));
+    return ok(await service.listPublic());
   } catch (error) {
     return fail(error);
   }

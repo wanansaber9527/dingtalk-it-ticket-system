@@ -4,23 +4,32 @@
 
 import {
   BellOutlined,
-  BookOutlined,
+  RobotOutlined,
   DashboardOutlined,
   FolderOutlined,
   FormOutlined,
   HomeOutlined,
-  TeamOutlined
+  TeamOutlined,
+  MenuOutlined,
+  ArrowRightOutlined
 } from "@ant-design/icons";
-import { Layout, Menu, Result, Spin, Typography } from "antd";
+import { Button, Drawer, Layout, Menu, Result, Skeleton } from "antd";
 import Link from "next/link";
 import { usePathname } from "next/navigation";
 import { useEffect, useState } from "react";
 import { apiGet } from "@/src/lib/clientApi";
 import { hasUserRole } from "@/src/lib/userRoles";
+import { UserAvatar } from "@/components/UserAvatar";
+import { LocalTestIdentity } from "@/components/LocalTestIdentity";
+import { ServiceMark } from "@/components/ServiceMark";
 
 const { Sider, Content } = Layout;
 
 type CurrentUser = {
+  name: string;
+  avatar?: string | null;
+  dingtalkUserId: string;
+  departmentName?: string;
   roleAssignments: { role: "EMPLOYEE" | "IT_HANDLER" | "SUPER_ADMIN" }[];
 };
 
@@ -28,10 +37,10 @@ const items = [
   { key: "/admin", icon: <DashboardOutlined />, label: <Link href="/admin">首页看板</Link> },
   { key: "/admin/tickets", icon: <FormOutlined />, label: <Link href="/admin/tickets">工单管理</Link> },
   { key: "/admin/categories", icon: <FolderOutlined />, label: <Link href="/admin/categories">分类配置</Link> },
-  { key: "/admin/knowledge-base", icon: <BookOutlined />, label: <Link href="/admin/knowledge-base">知识库</Link> },
+  { key: "/admin/ai-assistant", icon: <RobotOutlined />, label: <Link href="/admin/ai-assistant">大模型配置</Link> },
   { key: "/admin/notifications", icon: <BellOutlined />, label: <Link href="/admin/notifications">通知记录</Link> },
-  { key: "/admin/users", icon: <TeamOutlined />, label: <Link href="/admin/users">权限管理</Link> },
-  { key: "/tickets/new", icon: <HomeOutlined />, label: <Link href="/tickets/new">员工端</Link> }
+  { key: "/admin/users", icon: <TeamOutlined />, label: <Link href="/admin/users">人员与权限</Link> },
+  { key: "/ai-assistant", icon: <HomeOutlined />, label: <Link href="/ai-assistant">员工端</Link> }
 ];
 
 function selectedKey(pathname: string) {
@@ -45,6 +54,7 @@ export function AdminShell({ children }: { children: React.ReactNode }) {
   const pathname = usePathname();
   const [me, setMe] = useState<CurrentUser | null>(null);
   const [loading, setLoading] = useState(true);
+  const [menuOpen, setMenuOpen] = useState(false);
 
   useEffect(() => {
     apiGet<CurrentUser>("/api/me")
@@ -55,27 +65,29 @@ export function AdminShell({ children }: { children: React.ReactNode }) {
 
   const isSuperAdmin = me ? hasUserRole(me, ["SUPER_ADMIN"]) : false;
   const isHandler = me ? hasUserRole(me, ["IT_HANDLER"]) : false;
-  const visibleItems = isSuperAdmin ? items : items.filter((item) => ["/admin/tickets", "/tickets/new"].includes(item.key));
+  const visibleItems = isSuperAdmin ? items : items.filter((item) => ["/admin/tickets", "/ai-assistant"].includes(item.key));
   const allowed = Boolean(isSuperAdmin || (isHandler && pathname.startsWith("/admin/tickets")));
+  const brand = <div className="admin-brand"><ServiceMark /><div><strong>趣然工单系统</strong><span>IT SERVICE DESK</span></div></div>;
+  const navigation = <Menu theme="light" mode="inline" selectedKeys={[selectedKey(pathname)]} items={visibleItems} onClick={() => setMenuOpen(false)} />;
 
   return (
     <Layout className="page-shell">
-      <Sider width={236} className="admin-sider">
-        <div className="admin-brand">
-          <Typography.Text strong className="admin-brand-title">
-            趣然工单系统
-          </Typography.Text>
-          <div className="muted" style={{ marginTop: 4, fontSize: 12 }}>
-            管理后台
-          </div>
-        </div>
-        <Menu mode="inline" selectedKeys={[selectedKey(pathname)]} items={visibleItems} style={{ borderInlineEnd: 0, paddingTop: 10 }} />
+      <Sider width={232} className="admin-sider">
+        {brand}
+        <div className="nav-section-label">服务管理</div>
+        {navigation}
+        <div className="sidebar-footer"><div className="sidebar-caption">企业 IT 服务</div><Link href="/tickets/new">提交新的服务请求 <ArrowRightOutlined /></Link></div>
       </Sider>
+      <Drawer className="mobile-admin-drawer" title={brand} placement="left" open={menuOpen} onClose={() => setMenuOpen(false)} width={280}>{navigation}</Drawer>
       <Layout className="admin-main-layout">
+        <header className="admin-topbar">
+          <div className="topbar-location"><Button type="text" className="mobile-menu-button" aria-label="打开导航" icon={<MenuOutlined />} onClick={() => setMenuOpen(true)} /><span>工作空间</span><span className="breadcrumb-separator">/</span><strong>{pathname === "/admin" ? "首页看板" : pathname === "/admin/users/sync-logs" ? "人员同步日志" : pathname.startsWith("/admin/tickets/") ? "工单详情" : items.find((item) => item.key === selectedKey(pathname))?.label}</strong></div>
+          <div className="topbar-account"><LocalTestIdentity userId={me?.dingtalkUserId} /><div className="current-user"><UserAvatar size={38} user={me} /><div className="current-user-copy"><strong title={me?.name}>{me?.name || "正在加载"}</strong><span title={me?.departmentName || undefined}>{me?.departmentName || (isSuperAdmin ? "系统管理员" : "处理工作台")}</span></div></div></div>
+        </header>
         <Content className="admin-content">
           {loading ? (
-            <div className="content-band" style={{ minHeight: 260, display: "grid", placeItems: "center" }}>
-              <Spin />
+            <div className="content-band" style={{ minHeight: 260 }}>
+              <Skeleton active paragraph={{ rows: 6 }} />
             </div>
           ) : allowed ? (
             children

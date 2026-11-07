@@ -4,10 +4,11 @@
 
 import { useEffect, useMemo, useState } from "react";
 import Link from "next/link";
-import { Button, Input, Select, Space, Table, Typography, message } from "antd";
-import { EyeOutlined, ReloadOutlined, SearchOutlined } from "@ant-design/icons";
+import { Alert, Button, Input, Select, Space, Table, Typography, App as AntApp } from "antd";
+import { EyeOutlined, SearchOutlined } from "@ant-design/icons";
 import { TicketStatusTag } from "@/components/tickets/TicketStatusTag";
 import { apiGet } from "@/src/lib/clientApi";
+import { usePagedTickets } from "@/src/hooks/usePagedTickets";
 import { priorityLabels, ticketStatusLabels } from "@/src/lib/labels";
 
 type Ticket = {
@@ -30,35 +31,24 @@ type Category = { id: string; name: string };
 type Handler = { dingtalkUserId: string; name: string };
 
 export default function AdminTicketsPage() {
-  const [tickets, setTickets] = useState<Ticket[]>([]);
+  const { message } = AntApp.useApp();
   const [categories, setCategories] = useState<Category[]>([]);
   const [handlers, setHandlers] = useState<Handler[]>([]);
   const [filters, setFilters] = useState<Record<string, string | boolean | undefined>>({});
-  const [loading, setLoading] = useState(false);
-
-  const load = async () => {
-    setLoading(true);
-    try {
-      const query = new URLSearchParams();
-      Object.entries(filters).forEach(([key, value]) => {
-        if (value !== undefined && value !== "") query.set(key, String(value));
-      });
-      setTickets(await apiGet<Ticket[]>(`/api/admin/tickets?${query.toString()}`));
-    } catch (error) {
-      message.error(error instanceof Error ? error.message : "加载失败");
-    } finally {
-      setLoading(false);
-    }
-  };
-
+  const [appliedFilters, setAppliedFilters] = useState<Record<string, string | boolean | undefined>>({});
+  const { tickets, total, page, pageSize, loading, error, refresh, setPage, changePage } = usePagedTickets<Ticket>("/api/admin/tickets", appliedFilters);
+  const load = () => { setAppliedFilters({ ...filters }); setPage(1); refresh(); };
   useEffect(() => {
-    apiGet<Category[]>("/api/admin/categories").then(setCategories).catch(() => null);
-    apiGet<Handler[]>("/api/admin/users?role=handlers").then(setHandlers).catch(() => null);
-  }, []);
-
-  useEffect(() => {
-    load();
-  }, []);
+    Promise.allSettled([
+      apiGet<Category[]>("/api/admin/categories").catch(() => apiGet<Category[]>("/api/categories")),
+      apiGet<Handler[]>("/api/admin/users?role=handlers")
+    ]).then(([categoryRows, handlerRows]) => {
+      if (categoryRows.status === "fulfilled") setCategories(categoryRows.value);
+      else message.error("分类筛选项加载失败，请刷新重试");
+      if (handlerRows.status === "fulfilled") setHandlers(handlerRows.value);
+      else message.error("处理人筛选项加载失败，请刷新重试");
+    });
+  }, [message]);
 
   const statusOptions = useMemo(
     () => Object.entries(ticketStatusLabels).map(([value, label]) => ({ value, label })),
@@ -77,52 +67,60 @@ export default function AdminTicketsPage() {
       <div className="content-band">
         <div className="toolbar">
           <Input
-            placeholder="工单编号/标题/描述"
+            aria-label="工单编号/标题/描述" placeholder="工单编号/标题/描述"
             prefix={<SearchOutlined />}
             allowClear
             style={{ width: 220 }}
             onChange={(event) => setFilters((current) => ({ ...current, keyword: event.target.value }))}
           />
           <Select
-            placeholder="状态"
+            aria-label="状态" placeholder="状态"
             allowClear
             style={{ width: 150 }}
             options={statusOptions}
             onChange={(value) => setFilters((current) => ({ ...current, status: value }))}
           />
           <Select
-            placeholder="分类"
+            aria-label="分类" placeholder="分类"
             allowClear
             style={{ width: 170 }}
             options={categories.map((item) => ({ value: item.id, label: item.name }))}
             onChange={(value) => setFilters((current) => ({ ...current, categoryId: value }))}
           />
           <Input
-            placeholder="申请部门"
+            aria-label="申请部门" placeholder="申请部门"
             allowClear
             style={{ width: 160 }}
             onChange={(event) => setFilters((current) => ({ ...current, applicantDepartment: event.target.value }))}
           />
           <Select
-            placeholder="处理人"
+            aria-label="处理人" placeholder="处理人"
             allowClear
             style={{ width: 150 }}
             options={handlers.map((item) => ({ value: item.dingtalkUserId, label: item.name }))}
             onChange={(value) => setFilters((current) => ({ ...current, handlerUserId: value }))}
           />
           <Select
-            placeholder="是否超时"
+            aria-label="是否超时" placeholder="是否超时"
             allowClear
             style={{ width: 130 }}
             options={[{ value: "true", label: "已超时" }]}
             onChange={(value) => setFilters((current) => ({ ...current, overdue: value }))}
           />
-          <Button icon={<ReloadOutlined />} onClick={load} loading={loading}>
+          <Select
+            aria-label="离职处理人工单" placeholder="全部经办状态"
+            allowClear style={{ width: 170 }}
+            options={[{ value: "true", label: "原处理人不可用（待转派）" }]}
+            onChange={(value) => setFilters((current) => ({ ...current, needsReassignment: value }))}
+          />
+          <Button type="primary" icon={<SearchOutlined aria-hidden="true" />} onClick={load} loading={loading}>
             查询
           </Button>
         </div>
 
+        {error && <Alert type="error" showIcon message={error} style={{ marginBottom: 16 }} action={<Button size="small" onClick={refresh}>重试</Button>} />}
         <Table
+          pagination={{ current: page, pageSize, total, onChange: changePage, showSizeChanger: true, showTotal: (count) => `共 ${count} 条工单` }}
           rowKey="id"
           loading={loading}
           dataSource={tickets}

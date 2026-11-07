@@ -19,6 +19,11 @@ enum UserStatus {
   DISABLED
 }
 
+enum EmploymentStatus {
+  ACTIVE
+  DEPARTED
+}
+
 enum TicketPriority {
   LOW
   NORMAL
@@ -30,6 +35,7 @@ enum TicketStatus {
   PENDING
   ASSIGNED
   PROCESSING
+  RETURNED
   COMPLETED
   CLOSED
   REJECTED
@@ -54,6 +60,8 @@ enum TicketActionType {
   CLOSE
   CANCEL
   REOPEN
+  RETURN_TO_APPLICANT
+  APPLICANT_SUPPLEMENT
   STATUS_CHANGE
   SATISFACTION
   SYNC_AI_TABLE_FAILED
@@ -88,12 +96,52 @@ model User {
   position          String?
   avatar            String?    @db.Text
   status            UserStatus @default(ACTIVE)
+  employmentStatus EmploymentStatus @default(ACTIVE)
+  manuallyDisabled Boolean @default(false)
+  sessionVersion   Int @default(0)
+  departedAt       DateTime?
+  archivedAt       DateTime?
+  lastSyncedAt     DateTime?
+  mergedIntoId     String?
   createdAt         DateTime   @default(now())
   updatedAt         DateTime   @updatedAt
 
   applicantTickets  Ticket[]   @relation("ApplicantTickets")
   handlerTickets    Ticket[]   @relation("HandlerTickets")
   roleAssignments   UserRoleAssignment[]
+  categoryCcRecipients CategoryCcRecipient[]
+  ticketCcRecipients   TicketCcRecipient[]
+  identities        UserIdentity[]
+}
+
+// 外部账号可以变更，业务归属始终使用 User.id；历史绑定保留以核验返聘身份。
+model UserIdentity {
+  id             String @id @default(cuid())
+  userId         String
+  corpId         String
+  externalUserId String
+  unionId        String?
+  active         Boolean @default(true)
+  createdAt      DateTime @default(now())
+  updatedAt      DateTime @updatedAt
+  user           User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@unique([corpId, externalUserId])
+  @@index([corpId, unionId])
+  @@index([userId])
+}
+
+model PersonnelIdentityAudit {
+  id            String @id @default(cuid())
+  action        String
+  operatorId    String?
+  userId        String
+  relatedUserId String?
+  reason        String @db.Text
+  details       String? @db.LongText
+  createdAt     DateTime @default(now())
+
+  @@index([userId, createdAt])
 }
 
 model UserRoleAssignment {
@@ -117,10 +165,12 @@ model Ticket {
   priority                   TicketPriority   @default(NORMAL)
   status                     TicketStatus     @default(PENDING)
   applicantUserId            String
+  applicantId                String?
   applicantName              String
   applicantDepartment        String?
   applicantPosition          String?
   handlerUserId              String?
+  handlerId                  String?
   handlerName                String?
   description                String           @db.Text
   attachments                String?          @db.Text
@@ -135,18 +185,23 @@ model Ticket {
   resultSummary              String?          @db.Text
   satisfactionLevel          SatisfactionLevel?
   satisfactionComment        String?          @db.Text
+  aiConversationId           String?          @unique
+  aiContextSnapshot          String?          @db.LongText
   createdAt                  DateTime         @default(now())
   updatedAt                  DateTime         @updatedAt
 
-  applicant                  User             @relation("ApplicantTickets", fields: [applicantUserId], references: [dingtalkUserId])
-  handler                    User?            @relation("HandlerTickets", fields: [handlerUserId], references: [dingtalkUserId])
+  applicant                  User?            @relation("ApplicantTickets", fields: [applicantId], references: [id], onDelete: Restrict)
+  handler                    User?            @relation("HandlerTickets", fields: [handlerId], references: [id], onDelete: Restrict)
   logs                       TicketLog[]
   notifications              Notification[]
+  ccRecipients               TicketCcRecipient[]
 
   @@index([status])
   @@index([categoryId])
   @@index([handlerUserId])
   @@index([applicantUserId])
+  @@index([applicantId])
+  @@index([handlerId])
   @@index([createdAt])
 }
 
@@ -183,6 +238,37 @@ model TicketCategory {
   sortOrder             Int      @default(0)
   createdAt             DateTime @default(now())
   updatedAt             DateTime @updatedAt
+  ccRecipients          CategoryCcRecipient[]
+}
+
+// 分类默认名单仅用于新工单；工单实例保存独立授权快照。
+model CategoryCcRecipient {
+  id         String @id @default(cuid())
+  categoryId String
+  userId     String
+  personId   String?
+  createdAt  DateTime @default(now())
+  category   TicketCategory @relation(fields: [categoryId], references: [id], onDelete: Cascade)
+  user       User? @relation(fields: [personId], references: [id], onDelete: Restrict)
+
+  @@unique([categoryId, userId])
+  @@index([userId])
+  @@index([personId])
+}
+
+model TicketCcRecipient {
+  id        String @id @default(cuid())
+  ticketId  String
+  userId    String
+  personId  String?
+  userName  String
+  createdAt DateTime @default(now())
+  ticket    Ticket @relation(fields: [ticketId], references: [id], onDelete: Cascade)
+  user      User? @relation(fields: [personId], references: [id], onDelete: Restrict)
+
+  @@unique([ticketId, userId])
+  @@index([userId, ticketId])
+  @@index([personId, ticketId])
 }
 
 model KnowledgeBase {
@@ -212,8 +298,11 @@ model Notification {
   ticketId          String?
   ticketNo          String?
   receiverUserId    String
+  receiverPersonId  String?
   receiverName      String
   notificationType  NotificationType
+  recipientKind     String           @default("PRIMARY") @db.VarChar(16)
+  eventKey          String?          @db.VarChar(191)
   content           String           @db.Text
   sendStatus        SendStatus       @default(PENDING)
   errorMessage      String?          @db.Text
@@ -222,6 +311,7 @@ model Notification {
   ticket            Ticket?          @relation(fields: [ticketId], references: [id], onDelete: SetNull)
 
   @@index([receiverUserId])
+  @@index([receiverPersonId])
   @@index([ticketNo])
   @@index([createdAt])
 }
@@ -229,8 +319,119 @@ model Notification {
 model SystemConfig {
   id          String   @id @default(cuid())
   configKey   String   @unique
-  configValue String   @db.Text
+  configValue String   @db.LongText
   description String?  @db.Text
   createdAt   DateTime @default(now())
   updatedAt   DateTime @updatedAt
+}
+
+model DirectorySyncState {
+  id              String @id @default("directory")
+  enabled         Boolean @default(true)
+  intervalMinutes Int @default(60)
+  nextRunAt       DateTime @default(now())
+  lockedBy        String?
+  lockedUntil     DateTime?
+  lastSuccessAt   DateTime?
+  updatedAt       DateTime @updatedAt
+}
+
+model DirectorySyncRun {
+  id             String @id @default(cuid())
+  trigger        String
+  status         String
+  lockToken      String?
+  operatorId     String?
+  startedAt      DateTime @default(now())
+  finishedAt     DateTime?
+  total          Int @default(0)
+  createdCount   Int @default(0)
+  updatedCount   Int @default(0)
+  unchangedCount Int @default(0)
+  departedCount  Int @default(0)
+  restoredCount  Int @default(0)
+  pendingCount   Int @default(0)
+  failedCount    Int @default(0)
+  errorMessage   String? @db.Text
+  items          DirectorySyncItem[]
+
+  @@index([startedAt])
+  @@index([status, startedAt])
+}
+
+model DirectorySyncItem {
+  id             String @id @default(cuid())
+  runId          String
+  userId         String?
+  externalUserId String?
+  name           String?
+  action         String
+  changesJson    String? @db.LongText
+  errorMessage   String? @db.Text
+  createdAt      DateTime @default(now())
+  run            DirectorySyncRun @relation(fields: [runId], references: [id], onDelete: Cascade)
+
+  @@index([runId, createdAt])
+  @@index([userId, createdAt])
+}
+
+// AI 会话与工单独立保存；关联工单使用提交时快照，避免后续私聊泄露。
+model AiConversation {
+  id              String   @id @default(cuid())
+  userId          String
+  categoryId      String
+  categoryName    String
+  title           String
+  status          String   @default("ACTIVE")
+  busyUntil       DateTime?
+  activeRequestId String?
+  createdAt       DateTime @default(now())
+  updatedAt       DateTime @updatedAt
+  messages        AiMessage[]
+  draft           AiTicketDraft?
+  @@index([userId, updatedAt])
+  @@index([categoryId])
+}
+
+model AiMessage {
+  id             String   @id @default(cuid())
+  conversationId String
+  role           String
+  content        String   @db.LongText
+  attachments    String?  @db.LongText
+  references     String?  @db.Text
+  suggestions    String?  @db.Text
+  status         String   @default("COMPLETE")
+  requestKey     String?  @unique
+  model          String?
+  inputTokens    Int      @default(0)
+  outputTokens   Int      @default(0)
+  errorCode      String?
+  createdAt      DateTime @default(now())
+  conversation   AiConversation @relation(fields: [conversationId], references: [id], onDelete: Cascade)
+  @@index([conversationId, createdAt])
+  @@index([createdAt])
+}
+
+model AiTicketDraft {
+  id             String   @id @default(cuid())
+  conversationId String   @unique
+  title          String
+  categoryId     String
+  description    String   @db.Text
+  priority       TicketPriority @default(NORMAL)
+  attachments    String?  @db.LongText
+  version        Int      @default(1)
+  ticketId       String?  @unique
+  createdAt      DateTime @default(now())
+  updatedAt      DateTime @updatedAt
+  conversation   AiConversation @relation(fields: [conversationId], references: [id], onDelete: Cascade)
+}
+
+model AiDailyUsage {
+  id        String @id
+  userId    String
+  day       String
+  count     Int @default(0)
+  @@unique([userId, day])
 }

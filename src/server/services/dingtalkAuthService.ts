@@ -2,6 +2,9 @@
 import type { PrismaClient } from "@prisma/client";
 import { prisma as defaultPrisma } from "@/src/lib/prisma";
 import { DingTalkClient } from "@/src/server/dingtalk/DingTalkClient";
+import { AppError } from "@/src/lib/http";
+import { PersonnelIdentityService } from "@/src/server/services/personnelIdentityService";
+import { assertAuthConfiguration } from "@/src/server/auth-session";
 
 export class DingTalkAuthService {
   constructor(
@@ -10,40 +13,21 @@ export class DingTalkAuthService {
   ) {}
 
   async loginByCode(code: string) {
+    assertAuthConfiguration();
+    if (typeof code !== "string" || !code.trim() || code.length > 2048) throw new AppError(400, "INVALID_AUTH_CODE", "缺少有效的钉钉免登 code");
+    const observedAt = new Date();
     const userId = await this.dingtalkClient.getUserIdByAuthCode(code);
     const detail = await this.dingtalkClient.getUserDetail(userId);
+    if ((detail.userid || detail.userId) !== userId) throw new AppError(502, "DINGTALK_IDENTITY_MISMATCH", "钉钉用户详情与免登身份不一致");
     const department = await this.getSafeDepartmentInfo(detail);
 
-    const user = await this.prisma.user.upsert({
-      where: { dingtalkUserId: userId },
-      update: {
-        name: detail.name,
-        mobile: detail.mobile || null,
-        departmentId: department.departmentId || null,
-        departmentName: department.departmentName || null,
-        position: detail.position || detail.title || null,
-        avatar: detail.avatar || null
-      },
-      create: {
-        dingtalkUserId: userId,
-        name: detail.name,
-        mobile: detail.mobile || null,
-        departmentId: department.departmentId || null,
-        departmentName: department.departmentName || null,
-        position: detail.position || detail.title || null,
-        avatar: detail.avatar || null
-      }
-    });
-    await this.prisma.userRoleAssignment.upsert({
-      where: { userId_role: { userId: user.id, role: "EMPLOYEE" } },
-      update: {},
-      create: { userId: user.id, role: "EMPLOYEE" }
-    });
-
-    return this.prisma.user.findUniqueOrThrow({
-      where: { id: user.id },
-      include: { roleAssignments: true }
-    });
+    const { user } = await new PersonnelIdentityService(this.prisma).upsertDirectoryPerson({
+      dingtalkUserId: userId, name: detail.name, unionId: detail.unionid || detail.unionId,
+      mobile: detail.mobile, departmentId: department.departmentId, departmentName: department.departmentName,
+      position: detail.position || detail.title, avatar: detail.avatar
+    }, { source: "LOGIN", now: observedAt });
+    if (user.status !== "ACTIVE" || user.manuallyDisabled || user.employmentStatus !== "ACTIVE") throw new AppError(403, "USER_DISABLED", "当前用户已被禁用");
+    return user;
   }
 
   private async getSafeDepartmentInfo(detail: Awaited<ReturnType<DingTalkClient["getUserDetail"]>>) {

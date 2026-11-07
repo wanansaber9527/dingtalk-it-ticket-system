@@ -7,9 +7,9 @@ export async function POST(request: Request, context: { params: Promise<{ id: st
   try {
     const user = await getCurrentUser(request);
     const { id } = await context.params;
-    const body = await parseJson<{ resultSummary: string; toKnowledgeBase?: boolean }>(request);
+    const body = await parseJson<{ resultSummary: string }>(request);
     const service = new TicketService();
-    return ok(await service.resolve(id, user, body.resultSummary, body.toKnowledgeBase));
+    return ok(await service.resolve(id, user, body.resultSummary));
   } catch (error) {
     return fail(error);
   }

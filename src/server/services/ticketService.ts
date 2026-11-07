@@ -2,6 +2,7 @@
 import type {
   Prisma,
   PrismaClient,
+  NotificationType,
   SatisfactionLevel,
   Ticket,
   TicketActionType,
@@ -13,12 +14,19 @@ import { prisma as defaultPrisma } from "@/src/lib/prisma";
 import { AppError } from "@/src/lib/http";
 import {
   hasAnyRole,
+  requireActiveUser,
   requireCanViewTicket,
+  requireCanCommentTicket,
+  ticketPermissions,
+  isTicketApplicant,
   requireRole,
   requireTicketOperator
 } from "@/src/server/permissions";
+import { applicantScope, handlerScope, ccScope } from "@/src/server/personnelAccess";
 import type { UserWithRoles } from "@/src/lib/userRoles";
 import { NotificationService } from "./notificationService";
+import { validateOwnedAttachments } from "@/src/server/uploads";
+import { businessDate, retryNumberConflict, type Pagination, type PageResult } from "./serviceHelpers";
 
 export type AttachmentInput = {
   name: string;
@@ -38,20 +46,23 @@ export type CreateTicketInput = {
 
 export type TicketListFilters = {
   status?: TicketStatus;
+  statusGroup?: "todo" | "returned";
   categoryId?: string;
   applicantDepartment?: string;
   handlerUserId?: string;
   overdue?: boolean;
   keyword?: string;
+  includeStats?: boolean;
+  needsReassignment?: boolean;
 };
+
+type TicketListStats = { todo: number; returned: number; overdue: number };
+type TicketPageResult = PageResult<Ticket> & { stats?: TicketListStats };
 
 const terminalStatuses: TicketStatus[] = ["COMPLETED", "CLOSED", "REJECTED", "CANCELLED"];
 const scheduleAdjustableStatuses: TicketStatus[] = ["PENDING", "ASSIGNED", "PROCESSING"];
-
-function startOfToday() {
-  const now = new Date();
-  return new Date(now.getFullYear(), now.getMonth(), now.getDate());
-}
+const returnableStatuses: TicketStatus[] = ["PENDING", "ASSIGNED", "PROCESSING"];
+const slaRunningStatuses: TicketStatus[] = ["PENDING", "ASSIGNED", "PROCESSING"];
 
 function addMinutes(date: Date, minutes?: number | null) {
   if (!minutes) return null;
@@ -74,204 +85,239 @@ export class TicketService {
     private readonly notificationService = new NotificationService(prisma)
   ) {}
 
-  async createTicket(input: CreateTicketInput, applicant: UserWithRoles) {
+  async createTicket(input: CreateTicketInput, applicant: UserWithRoles, ai?: { conversationId: string; draftId: string; draftVersion: number; snapshot: string; conversationVersion?: Date }) {
+    requireActiveUser(applicant);
+    if (ai) {
+      const prior = await this.prisma.ticket.findUnique({ where: { aiConversationId: ai.conversationId }, include: { logs: true } });
+      if (prior) {
+        if (!isTicketApplicant(applicant, prior)) throw new AppError(403, "FORBIDDEN", "无权提交该会话");
+        return { ticket: prior, duplicateWarning: false };
+      }
+    }
     // 中文注释：创建工单时只校验必要字段，外部同步和通知失败不能阻断主流程。
     if (!applicant.dingtalkUserId) {
       throw new AppError(401, "DINGTALK_USER_REQUIRED", "未获取到钉钉用户信息，禁止提交工单。");
     }
     if (!input.title?.trim()) throw new AppError(400, "TITLE_REQUIRED", "请填写问题标题");
     if (!input.description?.trim()) throw new AppError(400, "DESCRIPTION_REQUIRED", "请填写问题描述");
+    input = { ...input, attachments: await validateOwnedAttachments(input.attachments, applicant) };
 
     const category = await this.prisma.ticketCategory.findFirst({
       where: { id: input.categoryId, enabled: true }
     });
     if (!category) throw new AppError(400, "CATEGORY_NOT_FOUND", "请选择有效的问题分类");
 
+    requireActiveUser(applicant);
     const createdAt = new Date();
-    const ticketNo = await this.generateTicketNo(createdAt);
-    const duplicate = await this.findPossibleDuplicate(applicant.dingtalkUserId, input.title, input.description);
-
-    const ticket = await this.prisma.ticket.create({
-      // 中文注释：工单快照保存申请人和处理人姓名，避免后续用户信息变更影响历史记录。
-      data: {
-        ticketNo,
-        title: input.title.trim(),
-        categoryId: category.id,
-        categoryName: category.name,
-        priority: input.priority || "NORMAL",
-        status: "PENDING",
-        applicantUserId: applicant.dingtalkUserId,
-        applicantName: applicant.name,
-        applicantDepartment: applicant.departmentName,
-        applicantPosition: applicant.position,
-        handlerUserId: category.defaultHandlerUserId,
-        handlerName: category.defaultHandlerName,
-        description: input.description.trim(),
-        attachments: attachmentText(input.attachments),
-        expectedResolveTime: parseDate(input.expectedResolveTime),
-        slaFirstResponseDeadline: addMinutes(createdAt, category.firstResponseMinutes),
-        slaResolveDeadline: addMinutes(createdAt, category.resolveMinutes)
-      }
-    });
-
-    const log = await this.writeLog(ticket, applicant, "CREATE", null, "PENDING", "员工提交工单", input.attachments);
-    void log;
-
-    await this.notificationService.sendTicketNotification(
-      ticket,
-      applicant,
-      "TICKET_CREATED",
-      this.ticketNotice(ticket, `你的工单已提交，工单编号：${ticket.ticketNo}。`)
-    );
-
-    const handler = category.defaultHandlerUserId
-      ? await this.prisma.user.findUnique({ where: { dingtalkUserId: category.defaultHandlerUserId } })
+    const defaultHandler = category.defaultHandlerUserId
+      ? await this.prisma.user.findUnique({ where: { dingtalkUserId: category.defaultHandlerUserId }, include: { roleAssignments: true } })
       : null;
-    if (handler) {
-      await this.notificationService.sendTicketNotification(
-        ticket,
-        handler,
-        "NEW_TICKET_PENDING",
-        this.ticketNotice(ticket, `有新的工单待处理：${ticket.ticketNo}。`)
-      );
-    } else {
-      await this.notifyAdmins(ticket, `有新的工单待处理：${ticket.ticketNo}。`);
-    }
-
-    return { ticket: await this.getTicketById(ticket.id), duplicateWarning: Boolean(duplicate) };
-  }
-
-  async listMyTickets(user: UserWithRoles) {
-    return this.prisma.ticket.findMany({
-      where: { applicantUserId: user.dingtalkUserId },
-      orderBy: { createdAt: "desc" },
-      take: 100
+    let handler = defaultHandler?.status === "ACTIVE" && hasAnyRole(defaultHandler, ["IT_HANDLER"]) ? defaultHandler : null;
+    const duplicate = await this.findPossibleDuplicate(applicant, input.title, input.description);
+    let reused = false;
+    const ticket = await retryNumberConflict(async () => {
+      const ticketNo = await this.generateTicketNo(createdAt);
+      return this.prisma.$transaction(async (tx) => {
+        await this.requireCurrentActor(tx, applicant);
+        // 默认处理人可能在外部查询后离职；在写入工单的事务内锁定其当前资格。
+        if (handler && !await this.claimCurrentHandler(tx, handler)) handler = null;
+        if (ai) {
+          const conversation = await tx.aiConversation.findFirst({ where: { id: ai.conversationId, userId: applicant.dingtalkUserId } });
+          if (!conversation) throw new AppError(404, "AI_CONVERSATION_NOT_FOUND", "会话不存在");
+          const conversationClaim = await tx.aiConversation.updateMany({ where: { id: ai.conversationId, userId: applicant.dingtalkUserId, updatedAt: ai.conversationVersion || conversation.updatedAt, OR: [{ busyUntil: null }, { busyUntil: { lt: new Date() } }] }, data: { updatedAt: new Date() } });
+          if (!conversationClaim.count) throw new AppError(409, "AI_BUSY", "会话已更新，请等待回答完成并重新确认工单卡片");
+          const claim = await tx.aiTicketDraft.updateMany({ where: { id: ai.draftId, conversationId: ai.conversationId, version: ai.draftVersion, ticketId: null }, data: { version: { increment: 1 } } });
+          if (!claim.count) throw new AppError(409, "AI_DRAFT_CHANGED", "工单卡片已更新，请刷新后提交");
+        }
+        const ccRecipients = await tx.categoryCcRecipient.findMany({
+          where: { categoryId: category.id, user: { status: "ACTIVE" } },
+          include: { user: { select: { id: true, dingtalkUserId: true, name: true } } }
+        });
+        const created = await tx.ticket.create({
+          data: {
+            ticketNo,
+            title: input.title.trim(),
+            categoryId: category.id,
+            categoryName: category.name,
+            ccRecipients: { create: ccRecipients.filter((person) => person.user).map((person) => ({ userId: person.user!.dingtalkUserId, personId: person.user!.id, userName: person.user!.name })) },
+            priority: input.priority || "NORMAL",
+            status: "PENDING",
+            applicantUserId: applicant.dingtalkUserId,
+            applicantId: applicant.id,
+            applicantName: applicant.name,
+            applicantDepartment: applicant.departmentName,
+            applicantPosition: applicant.position,
+            handlerUserId: handler?.dingtalkUserId || null,
+            handlerId: handler?.id || null,
+            handlerName: handler?.name || null,
+            description: input.description.trim(),
+            ...(ai ? { aiConversationId: ai.conversationId, aiContextSnapshot: ai.snapshot } : {}),
+            attachments: attachmentText(input.attachments),
+            expectedResolveTime: parseDate(input.expectedResolveTime),
+            slaFirstResponseDeadline: addMinutes(createdAt, category.firstResponseMinutes),
+            slaResolveDeadline: addMinutes(createdAt, category.resolveMinutes),
+            createdAt
+          }
+        });
+        await this.writeLog(created, applicant, "CREATE", null, "PENDING", "员工提交工单", input.attachments, tx);
+        if (ai) {
+          await tx.aiTicketDraft.update({ where: { id: ai.draftId }, data: { ticketId: created.id } });
+          await tx.aiConversation.update({ where: { id: ai.conversationId }, data: { status: "CONVERTED" } });
+        }
+        return tx.ticket.findUniqueOrThrow({ where: { id: created.id }, include: { logs: { orderBy: { createdAt: "asc" } } } });
+      });
+    }, "ticketNo").catch(async (error: unknown) => {
+      if (ai) {
+        const existing = await this.prisma.ticket.findUnique({ where: { aiConversationId: ai.conversationId }, include: { logs: true } });
+        if (existing && isTicketApplicant(applicant, existing)) { reused = true; return existing; }
+      }
+      throw error;
     });
+    if (reused) return { ticket, duplicateWarning: false };
+
+    const targets: Parameters<NotificationService["sendTicketEvent"]>[1] = [{
+      target: applicant, notificationType: "TICKET_CREATED",
+      content: this.ticketNotice(ticket, `你的工单已提交，工单编号：${ticket.ticketNo}。`)
+    }];
+    const pendingContent = this.ticketNotice(ticket, `有新的工单待处理：${ticket.ticketNo}。`);
+    targets.push(...(handler ? [{ target: handler, notificationType: "NEW_TICKET_PENDING" as const, content: pendingContent }]
+      : await this.adminTargets(pendingContent, "NEW_TICKET_PENDING")));
+    await this.notifyEvent(ticket, targets, "新工单已提交。", "TICKET_CREATED");
+
+    return { ticket, duplicateWarning: Boolean(duplicate) };
   }
 
-  async listAdminTickets(filters: TicketListFilters, user: UserWithRoles) {
-    if (!hasAnyRole(user, ["SUPER_ADMIN"])) {
-      requireRole(user, ["IT_HANDLER"]);
+  async listMyTickets(user: UserWithRoles, pagination?: Pagination, scope: "mine" | "cc" = "mine") {
+    requireActiveUser(user);
+    return this.listTickets(scope === "cc" ? { ccRecipients: { some: ccScope(user) } } : applicantScope(user), pagination, 100);
+  }
+
+  async listAdminTickets(filters: TicketListFilters, user: UserWithRoles, pagination?: Pagination) {
+    requireRole(user, ["SUPER_ADMIN", "IT_HANDLER"]);
+    if (filters.statusGroup && !["todo", "returned"].includes(filters.statusGroup)) {
+      throw new AppError(400, "INVALID_STATUS_GROUP", "无效的工单状态组");
     }
     await this.refreshOverdueFlags();
-
-    const where: Prisma.TicketWhereInput = {
-      ...(!hasAnyRole(user, ["SUPER_ADMIN"]) ? { handlerUserId: user.dingtalkUserId } : {}),
-      ...(filters.status ? { status: filters.status } : {}),
+    const selectedHandler = filters.handlerUserId && hasAnyRole(user, ["SUPER_ADMIN"])
+      ? await this.prisma.user.findUnique({ where: { dingtalkUserId: filters.handlerUserId } }) : null;
+    // Counts share the permission/search scope, independently of the selected status/overdue chips.
+    const scope: Prisma.TicketWhereInput = {
+      ...(!hasAnyRole(user, ["SUPER_ADMIN"]) ? { AND: [handlerScope(user)] } : {}),
       ...(filters.categoryId ? { categoryId: filters.categoryId } : {}),
       ...(filters.applicantDepartment ? { applicantDepartment: { contains: filters.applicantDepartment } } : {}),
-      ...(filters.handlerUserId && hasAnyRole(user, ["SUPER_ADMIN"]) ? { handlerUserId: filters.handlerUserId } : {}),
-      ...(filters.overdue ? { OR: [{ isFirstResponseOverdue: true }, { isResolveOverdue: true }] } : {}),
-      ...(filters.keyword
-        ? {
-            OR: [
-              { ticketNo: { contains: filters.keyword } },
-              { title: { contains: filters.keyword } },
-              { description: { contains: filters.keyword } }
-            ]
-          }
-        : {})
+      ...(filters.handlerUserId && hasAnyRole(user, ["SUPER_ADMIN"]) ? selectedHandler ? { AND: [handlerScope(selectedHandler)] } : { handlerUserId: filters.handlerUserId } : {}),
+      ...(filters.keyword ? { OR: [
+        { ticketNo: { contains: filters.keyword } },
+        { title: { contains: filters.keyword } },
+        { description: { contains: filters.keyword } }
+      ] } : {})
     };
+    const conditions: Prisma.TicketWhereInput[] = [scope];
+    if (filters.needsReassignment) {
+      requireRole(user, ["SUPER_ADMIN"]);
+      conditions.push({ status: { in: ["PENDING", "ASSIGNED", "PROCESSING", "RETURNED"] }, handlerUserId: { not: null }, OR: [
+        { handler: { is: null } },
+        { handler: { is: { employmentStatus: "DEPARTED" } } },
+        { handler: { is: { status: "DISABLED" } } },
+        { handler: { is: { mergedIntoId: { not: null } } } },
+        { handler: { is: { roleAssignments: { none: { role: { in: ["IT_HANDLER", "SUPER_ADMIN"] } } } } } }
+      ] });
+    }
+    if (filters.status) conditions.push({ status: filters.status });
+    if (filters.statusGroup) conditions.push({ status: { in: filters.statusGroup === "todo" ? scheduleAdjustableStatuses : ["RETURNED"] } });
+    if (filters.overdue) conditions.push({ OR: [{ isFirstResponseOverdue: true }, { isResolveOverdue: true }] });
+    return this.listTickets({ AND: conditions }, pagination, 200, filters.includeStats ? scope : undefined);
+  }
 
-    return this.prisma.ticket.findMany({
-      where,
-      orderBy: { createdAt: "desc" },
-      take: 200
-    });
+  private async listTickets(where: Prisma.TicketWhereInput, pagination: Pagination | undefined, legacyLimit: number, statsScope?: Prisma.TicketWhereInput): Promise<Ticket[] | TicketPageResult> {
+    const orderBy: Prisma.TicketOrderByWithRelationInput[] = [{ createdAt: "desc" }, { id: "desc" }];
+    if (!pagination) return this.prisma.ticket.findMany({ where, orderBy, take: legacyLimit });
+    const { page, pageSize } = pagination;
+    if (statsScope) {
+      const [items, total, todo, returned, overdue] = await this.prisma.$transaction([
+        this.prisma.ticket.findMany({ where, orderBy, skip: (page - 1) * pageSize, take: pageSize }),
+        this.prisma.ticket.count({ where }),
+        this.prisma.ticket.count({ where: { AND: [statsScope, { status: { in: scheduleAdjustableStatuses } }] } }),
+        this.prisma.ticket.count({ where: { AND: [statsScope, { status: "RETURNED" }] } }),
+        this.prisma.ticket.count({ where: { AND: [statsScope, { OR: [{ isFirstResponseOverdue: true }, { isResolveOverdue: true }] }] } })
+      ], { isolationLevel: "RepeatableRead" });
+      return { items, total, page, pageSize, totalPages: Math.ceil(total / pageSize), stats: { todo, returned, overdue } };
+    }
+    const [items, total] = await this.prisma.$transaction([
+      this.prisma.ticket.findMany({ where, orderBy, skip: (page - 1) * pageSize, take: pageSize }),
+      this.prisma.ticket.count({ where })
+    ]);
+    return { items, total, page, pageSize, totalPages: Math.ceil(total / pageSize) };
   }
 
   async getTicketForUser(id: string, user: UserWithRoles) {
     const ticket = await this.getTicketById(id);
     requireCanViewTicket(user, ticket);
-    return ticket;
+    const applicant = await this.prisma.user.findUnique({
+      where: ticket.applicantId ? { id: ticket.applicantId } : { dingtalkUserId: ticket.applicantUserId },
+      select: { avatar: true }
+    });
+    return { ...ticket, permissions: ticketPermissions(user, ticket), applicant: { avatar: applicant?.avatar ?? null } };
   }
 
   async addComment(id: string, remark: string, operator: UserWithRoles, attachments?: AttachmentInput[]) {
     const ticket = await this.getTicketById(id);
-    requireCanViewTicket(operator, ticket);
-    const log = await this.writeLog(ticket, operator, "COMMENT", ticket.status, ticket.status, remark, attachments);
-    void log;
-    return this.getTicketById(id);
+    requireCanCommentTicket(operator, ticket);
+    attachments = await validateOwnedAttachments(attachments, operator);
+    const updated = await this.commitChange(ticket, operator, {}, "COMMENT", remark, attachments);
+    return updated;
   }
 
   async assign(id: string, handlerUserId: string, operator: UserWithRoles, remark?: string) {
     requireRole(operator, ["SUPER_ADMIN"]);
     const ticket = await this.getTicketById(id);
-    const handler = await this.prisma.user.findUnique({ where: { dingtalkUserId: handlerUserId }, include: { roleAssignments: true } });
-    if (!handler || !hasAnyRole(handler, ["IT_HANDLER"])) {
-      throw new AppError(400, "HANDLER_NOT_FOUND", "请选择有效的IT处理人");
-    }
+    this.requireOpenTicket(ticket);
+    const handler = await this.validHandler(handlerUserId);
 
-    const updated = await this.prisma.ticket.update({
-      where: { id },
-      data: {
-        handlerUserId: handler.dingtalkUserId,
-        handlerName: handler.name,
-        status: "ASSIGNED"
-      }
-    });
-    const log = await this.writeLog(ticket, operator, "ASSIGN", ticket.status, "ASSIGNED", remark || `分派给${handler.name}`);
-    void log;
-    await this.notificationService.sendTicketNotification(
-      updated,
-      handler,
-      "TICKET_ASSIGNED",
-      this.ticketNotice(updated, `你有一条新的工单：${updated.ticketNo}。`)
-    );
-    await this.notifyApplicant(updated, `你的工单状态已更新为：已分派。`);
-    return this.getTicketById(id);
+    const updated = await this.commitChange(ticket, operator, {
+      handlerUserId: handler.dingtalkUserId, handlerId: handler.id, handlerName: handler.name, status: "ASSIGNED"
+    }, "ASSIGN", remark || `分派给${handler.name}`);
+    await this.notifyEvent(updated, [
+      { target: handler, notificationType: "TICKET_ASSIGNED", content: this.ticketNotice(updated, `你有一条新的工单：${updated.ticketNo}。`) },
+      { target: { id: updated.applicantId || undefined, dingtalkUserId: updated.applicantUserId, name: updated.applicantName }, notificationType: "STATUS_UPDATED", content: "你的工单状态已更新为：已分派。" }
+    ], `工单已分派给${handler.name}。`, "TICKET_ASSIGNED");
+    return updated;
   }
 
   async transfer(id: string, handlerUserId: string, operator: UserWithRoles, remark?: string) {
     const ticket = await this.getTicketById(id);
     requireTicketOperator(operator, ticket);
-    const handler = await this.prisma.user.findUnique({ where: { dingtalkUserId: handlerUserId }, include: { roleAssignments: true } });
-    if (!handler || !hasAnyRole(handler, ["IT_HANDLER"])) {
-      throw new AppError(400, "HANDLER_NOT_FOUND", "请选择有效的IT处理人");
-    }
-    const updated = await this.prisma.ticket.update({
-      where: { id },
-      data: {
-        handlerUserId: handler.dingtalkUserId,
-        handlerName: handler.name,
-        status: "ASSIGNED"
-      }
-    });
-    const log = await this.writeLog(ticket, operator, "TRANSFER", ticket.status, "ASSIGNED", remark || `转交给${handler.name}`);
-    void log;
-    await this.notificationService.sendTicketNotification(
-      updated,
-      handler,
-      "TICKET_ASSIGNED",
-      this.ticketNotice(updated, `你有一条新的工单：${updated.ticketNo}。`)
-    );
-    return this.getTicketById(id);
+    this.requireOpenTicket(ticket);
+    const handler = await this.validHandler(handlerUserId);
+    const updated = await this.commitChange(ticket, operator, {
+      handlerUserId: handler.dingtalkUserId, handlerId: handler.id, handlerName: handler.name, status: "ASSIGNED"
+    }, "TRANSFER", remark || `转交给${handler.name}`);
+    await this.notifyEvent(updated, [{ target: handler, notificationType: "TICKET_ASSIGNED", content: this.ticketNotice(updated, `你有一条新的工单：${updated.ticketNo}。`) }], `工单已转交给${handler.name}。`, "TICKET_ASSIGNED");
+    return updated;
   }
 
   async updateStatus(id: string, status: TicketStatus, operator: UserWithRoles, remark?: string) {
     const ticket = await this.getTicketById(id);
     requireTicketOperator(operator, ticket);
     this.validateTransition(ticket.status, status);
+    if (status === "COMPLETED") return this.resolve(id, operator, remark || ticket.resultSummary || "");
+    if (status === ticket.status) return ticket;
 
     const now = new Date();
     // 中文注释：首次进入处理中时记录首响时间，用于后续 SLA 首响统计。
-    const data: Prisma.TicketUpdateInput = {
+    const data: Prisma.TicketUncheckedUpdateManyInput = {
       status,
       ...(status === "PROCESSING" && !ticket.firstResponseAt ? { firstResponseAt: now } : {}),
-      ...(status === "COMPLETED" && !ticket.firstResponseAt ? { firstResponseAt: now } : {}),
-      ...(status === "COMPLETED" && !ticket.resolvedAt ? { resolvedAt: now } : {}),
       ...(status === "CLOSED" ? { closedAt: now } : {})
     };
 
-    const updated = await this.prisma.ticket.update({ where: { id }, data });
     const actionType: TicketActionType = status === "PROCESSING" ? "ACCEPT" : "STATUS_CHANGE";
-    const log = await this.writeLog(ticket, operator, actionType, ticket.status, status, remark || "状态变更");
-    void log;
-    await this.notifyApplicant(updated, `你的工单状态已更新为：${this.statusText(status)}。`);
-    return this.getTicketById(id);
+    const updated = await this.commitChange(ticket, operator, { ...data, ...this.slaFlags(ticket, now) }, actionType, remark || "状态变更");
+    await this.notifyApplicant(updated, `你的工单状态已更新为：${this.statusText(status)}。`, `工单状态已更新为：${this.statusText(status)}。`);
+    return updated;
   }
 
-  async resolve(id: string, operator: UserWithRoles, resultSummary: string, toKnowledgeBase?: boolean) {
+  async resolve(id: string, operator: UserWithRoles, resultSummary: string, _legacyKnowledgeFlag?: boolean) {
     const ticket = await this.getTicketById(id);
     requireTicketOperator(operator, ticket);
     if (!resultSummary?.trim()) throw new AppError(400, "RESULT_REQUIRED", "请填写处理结果");
@@ -279,43 +325,15 @@ export class TicketService {
       throw new AppError(400, "INVALID_STATUS", "当前工单已完结，不能重复完成处理");
     }
     const now = new Date();
-    const updated = await this.prisma.ticket.update({
-      where: { id },
-      data: {
-        status: "COMPLETED",
-        firstResponseAt: ticket.firstResponseAt || now,
-        resolvedAt: now,
-        resultSummary: resultSummary.trim()
-      }
-    });
-    const log = await this.writeLog(ticket, operator, "RESOLVE", ticket.status, "COMPLETED", resultSummary);
-    void log;
-    await this.notificationService.sendTicketNotification(
-      updated,
-      { dingtalkUserId: updated.applicantUserId, name: updated.applicantName },
-      "TICKET_RESOLVED",
-      this.ticketNotice(updated, "你的工单已处理完成，可进行满意度评价。")
-    );
-
-    if (toKnowledgeBase) {
-      // 中文注释：处理人勾选沉淀知识库时先生成草稿，由管理员后续审核启用。
-      await this.prisma.knowledgeBase.create({
-        data: {
-          kbNo: await this.generateKbNo(),
-          title: ticket.title,
-          categoryId: ticket.categoryId,
-          categoryName: ticket.categoryName,
-          problemDescription: ticket.description,
-          solutionSteps: resultSummary,
-          sourceTicketId: ticket.id,
-          sourceTicketNo: ticket.ticketNo,
-          maintainerUserId: operator.dingtalkUserId,
-          maintainerName: operator.name,
-          enabled: false
-        }
-      });
-    }
-    return this.getTicketById(id);
+    const updated = await this.commitChange(ticket, operator, {
+      status: "COMPLETED",
+      firstResponseAt: ticket.firstResponseAt || now,
+      resolvedAt: now,
+      resultSummary: resultSummary.trim(),
+      ...this.slaFlags(ticket, now)
+    }, "RESOLVE", resultSummary);
+    await this.notifyApplicant(updated, this.ticketNotice(updated, "你的工单已处理完成，可进行满意度评价。"), "工单已处理完成。", "TICKET_RESOLVED");
+    return updated;
   }
 
   async adjustResolveDeadline(id: string, operator: UserWithRoles, deadlineValue: string, remark?: string) {
@@ -343,19 +361,11 @@ export class TicketService {
       remark?.trim() ? `调整原因：${remark.trim()}` : null
     ].filter(Boolean).join("\n");
 
-    const updated = await this.prisma.ticket.update({
-      where: { id },
-      data: {
-        slaResolveDeadline: nextDeadline,
-        isResolveOverdue: false
-      }
-    });
-    const log = await this.writeLog(ticket, operator, "STATUS_CHANGE", ticket.status, ticket.status, note);
-    void log;
-    await this.notificationService.sendTicketNotification(
+    const updated = await this.commitChange(ticket, operator, {
+      slaResolveDeadline: nextDeadline, isResolveOverdue: false
+    }, "STATUS_CHANGE", note);
+    await this.notifyApplicant(
       updated,
-      { dingtalkUserId: updated.applicantUserId, name: updated.applicantName },
-      "STATUS_UPDATED",
       this.ticketNotice(
         updated,
         [
@@ -364,30 +374,93 @@ export class TicketService {
           `新预计处理时间：${this.formatDate(nextDeadline)}`,
           remark?.trim() ? `调整说明：${remark.trim()}` : null
         ].filter(Boolean).join("\n")
-      )
+      ),
+      [`工单预计处理时间已调整。`, `原预计处理时间：${previousDeadline ? this.formatDate(previousDeadline) : "-"}`,
+        `新预计处理时间：${this.formatDate(nextDeadline)}`, remark?.trim() ? `调整说明：${remark.trim()}` : null].filter(Boolean).join("\n")
     );
 
-    return this.getTicketById(id);
+    return updated;
+  }
+
+  async returnToApplicant(id: string, operator: UserWithRoles, remark?: string) {
+    const ticket = await this.getTicketById(id);
+    requireTicketOperator(operator, ticket);
+    if (!returnableStatuses.includes(ticket.status)) {
+      throw new AppError(400, "INVALID_STATUS", "当前工单状态不支持退回发起人");
+    }
+    const reason = remark?.trim();
+    if (!reason) {
+      throw new AppError(400, "RETURN_REASON_REQUIRED", "请填写退回原因");
+    }
+
+    const now = new Date();
+    const updated = await this.commitChange(ticket, operator, {
+      status: "RETURNED", firstResponseAt: ticket.firstResponseAt || now,
+      isFirstResponseOverdue: false, isResolveOverdue: false
+    }, "RETURN_TO_APPLICANT", reason);
+    await this.notifyApplicant(
+      updated,
+      this.ticketNotice(updated, [`你的工单已退回，请补充说明：${updated.ticketNo}。`, `退回原因：${reason}`].join("\n")),
+      `工单已退回，等待发起人补充。\n退回原因：${reason}`
+    );
+    return updated;
+  }
+
+  async supplementReturnedTicket(id: string, applicant: UserWithRoles, remark?: string, attachments?: AttachmentInput[]) {
+    const ticket = await this.getTicketById(id);
+    if (!isTicketApplicant(applicant, ticket)) {
+      throw new AppError(403, "FORBIDDEN", "只能补充自己提交的工单");
+    }
+    if (ticket.status !== "RETURNED") {
+      throw new AppError(400, "INVALID_STATUS", "当前工单不处于待发起人补充状态");
+    }
+    const content = remark?.trim();
+    if (!content) {
+      throw new AppError(400, "SUPPLEMENT_REQUIRED", "请填写补充说明");
+    }
+
+    attachments = await validateOwnedAttachments(attachments, applicant);
+    const nextStatus: TicketStatus = ticket.handlerUserId ? "PROCESSING" : "PENDING";
+    requireActiveUser(applicant);
+    const updated = await this.commitChange(ticket, applicant, {
+      status: nextStatus, isFirstResponseOverdue: false, isResolveOverdue: false
+    }, "APPLICANT_SUPPLEMENT", content, attachments);
+
+    if (updated.handlerUserId && updated.handlerName) {
+      await this.notifyEvent(updated, [{
+        target: { id: updated.handlerId || undefined, dingtalkUserId: updated.handlerUserId, name: updated.handlerName },
+        notificationType: "STATUS_UPDATED",
+        content: this.ticketNotice(updated, [`申请人已补充工单信息，请继续处理：${updated.ticketNo}。`, `补充说明：${content}`].join("\n"))
+      }], `发起人已补充工单信息。\n补充说明：${content}`);
+    }
+
+    return updated;
   }
 
   async close(id: string, operator: UserWithRoles, remark?: string) {
     const ticket = await this.getTicketById(id);
     requireTicketOperator(operator, ticket);
-    const updated = await this.prisma.ticket.update({
-      where: { id },
-      data: { status: "CLOSED", closedAt: new Date() }
-    });
-    const log = await this.writeLog(ticket, operator, "CLOSE", ticket.status, "CLOSED", remark || "关闭工单");
-    void log;
-    await this.notifyApplicant(updated, `你的工单状态已更新为：已关闭。`);
-    return this.getTicketById(id);
+    if (ticket.status === "CLOSED") return ticket;
+    const now = new Date();
+    const updated = await this.commitChange(ticket, operator, {
+      status: "CLOSED", closedAt: now, ...this.slaFlags(ticket, now)
+    }, "CLOSE", remark || "关闭工单");
+    await this.notifyApplicant(updated, `你的工单状态已更新为：已关闭。`, "工单已关闭。");
+    return updated;
   }
 
   async silentDelete(id: string, operator: UserWithRoles) {
     requireRole(operator, ["SUPER_ADMIN"]);
     const ticket = await this.getTicketById(id);
-    const deleted = await this.prisma.ticket.delete({ where: { id: ticket.id } });
-    return { id: deleted.id, ticketNo: deleted.ticketNo, deleted: true };
+    return this.prisma.$transaction(async (tx) => {
+      await this.requireCurrentActor(tx, operator);
+      const current = await tx.user.findUnique({ where: { id: operator.id }, include: { roleAssignments: true } });
+      if (!current) throw new AppError(401, "SESSION_REVOKED", "人员状态已变更，请重新登录");
+      requireRole(current, ["SUPER_ADMIN"]);
+      const deleted = await tx.ticket.deleteMany({ where: { id: ticket.id, updatedAt: ticket.updatedAt } });
+      if (deleted.count !== 1) throw new AppError(409, "TICKET_CHANGED", "工单已被其他操作更新，请刷新后重试");
+      return { id: ticket.id, ticketNo: ticket.ticketNo, deleted: true };
+    }, { isolationLevel: "Serializable" });
   }
 
   async confirm(id: string, applicant: UserWithRoles, remark?: string) {
@@ -406,7 +479,7 @@ export class TicketService {
 
   async satisfaction(id: string, applicant: UserWithRoles, level: SatisfactionLevel, comment?: string) {
     const ticket = await this.getTicketById(id);
-    if (ticket.applicantUserId !== applicant.dingtalkUserId) {
+    if (!isTicketApplicant(applicant, ticket)) {
       throw new AppError(403, "FORBIDDEN", "只能评价自己提交的工单");
     }
     if (!["COMPLETED", "CLOSED"].includes(ticket.status)) {
@@ -415,20 +488,17 @@ export class TicketService {
     if (["NORMAL", "UNSATISFIED"].includes(level) && !comment?.trim()) {
       throw new AppError(400, "COMMENT_REQUIRED", "一般或不满意时需要填写原因");
     }
-    const updated = await this.prisma.ticket.update({
-      where: { id },
-      data: {
-        satisfactionLevel: level,
-        satisfactionComment: comment?.trim() || null
-      }
-    });
-    const log = await this.writeLog(ticket, applicant, "SATISFACTION", ticket.status, ticket.status, comment || level);
-    void log;
+    requireActiveUser(applicant);
+    const updated = await this.commitChange(ticket, applicant, {
+      satisfactionLevel: level, satisfactionComment: comment?.trim() || null
+    }, "SATISFACTION", comment || level);
 
     if (level === "UNSATISFIED") {
-      await this.notifyAdmins(updated, `工单 ${updated.ticketNo} 收到不满意评价，请跟进复盘。`);
+      await this.notifyEvent(updated,
+        await this.adminTargets(`工单 ${updated.ticketNo} 收到不满意评价，请跟进复盘。`, "UNSATISFIED_REVIEW"),
+        "工单收到不满意评价。", "UNSATISFIED_REVIEW");
     }
-    return this.getTicketById(id);
+    return updated;
   }
 
   async refreshOverdueFlags() {
@@ -438,7 +508,7 @@ export class TicketService {
       where: {
         firstResponseAt: null,
         slaFirstResponseDeadline: { lt: now },
-        status: { notIn: terminalStatuses },
+        status: { in: slaRunningStatuses },
         isFirstResponseOverdue: false
       },
       data: { isFirstResponseOverdue: true }
@@ -447,7 +517,7 @@ export class TicketService {
       where: {
         resolvedAt: null,
         slaResolveDeadline: { lt: now },
-        status: { notIn: terminalStatuses },
+        status: { in: slaRunningStatuses },
         isResolveOverdue: false
       },
       data: { isResolveOverdue: true }
@@ -461,56 +531,111 @@ export class TicketService {
     const safeWindowMinutes = Number.isFinite(windowMinutes) && windowMinutes > 0 ? windowMinutes : 120;
     const windowEnd = new Date(now.getTime() + safeWindowMinutes * 60_000);
 
-    const [firstResponseTickets, resolveTickets] = await Promise.all([
-      this.prisma.ticket.findMany({
-        where: {
-          firstResponseAt: null,
-          slaFirstResponseDeadline: { gt: now, lte: windowEnd },
-          status: { notIn: terminalStatuses },
-          notifications: { none: { notificationType: "TICKET_FIRST_RESPONSE_DUE_SOON" } }
-        },
-        orderBy: { slaFirstResponseDeadline: "asc" },
-        take: 100
-      }),
-      this.prisma.ticket.findMany({
-        where: {
-          resolvedAt: null,
-          slaResolveDeadline: { gt: now, lte: windowEnd },
-          status: { notIn: terminalStatuses },
-          notifications: { none: { notificationType: "TICKET_RESOLVE_DUE_SOON" } }
-        },
-        orderBy: { slaResolveDeadline: "asc" },
-        take: 100
-      })
-    ]);
-
-    const firstResponse = [];
-    for (const ticket of firstResponseTickets) {
-      firstResponse.push(await this.notifySlaDueSoon(ticket, "TICKET_FIRST_RESPONSE_DUE_SOON", "首响即将超时提醒", ticket.slaFirstResponseDeadline, now));
-    }
-
-    const resolve = [];
-    for (const ticket of resolveTickets) {
-      resolve.push(await this.notifySlaDueSoon(ticket, "TICKET_RESOLVE_DUE_SOON", "处理即将超时提醒", ticket.slaResolveDeadline, now));
-    }
-
-    return {
-      windowMinutes: safeWindowMinutes,
-      firstResponse: {
-        count: firstResponse.length,
-        tickets: firstResponse
-      },
-      resolve: {
-        count: resolve.length,
-        tickets: resolve
+    const firstResponse: Array<{ ticketNo: string; receiver: string; deadline: Date | null; sent: number; skipped: number; failed: number }> = [];
+    const resolve: typeof firstResponse = [];
+    for (const kind of ["first", "resolve"] as const) {
+      let cursor: string | undefined;
+      while (true) {
+        const tickets: Ticket[] = await this.prisma.ticket.findMany({
+          where: {
+            ...(kind === "first" ? { firstResponseAt: null, slaFirstResponseDeadline: { gt: now, lte: windowEnd } } : { resolvedAt: null, slaResolveDeadline: { gt: now, lte: windowEnd } }),
+            status: { in: slaRunningStatuses }
+          },
+          orderBy: { id: "asc" }, take: 100,
+          ...(cursor ? { cursor: { id: cursor }, skip: 1 } : {})
+        });
+        for (const ticket of tickets) {
+          const result = await this.notifySlaDueSoon(
+            ticket,
+            kind === "first" ? "TICKET_FIRST_RESPONSE_DUE_SOON" : "TICKET_RESOLVE_DUE_SOON",
+            kind === "first" ? "首响即将超时提醒" : "处理即将超时提醒",
+            kind === "first" ? ticket.slaFirstResponseDeadline : ticket.slaResolveDeadline,
+            now
+          );
+          (kind === "first" ? firstResponse : resolve).push(result);
+        }
+        if (tickets.length < 100) break;
+        cursor = tickets[tickets.length - 1].id;
       }
+    }
+
+    const summary = (results: typeof firstResponse) => ({
+      count: results.reduce((sum, item) => sum + item.sent, 0),
+      scanned: results.length,
+      skipped: results.reduce((sum, item) => sum + item.skipped, 0),
+      failed: results.reduce((sum, item) => sum + item.failed, 0),
+      tickets: results.filter((item) => item.sent > 0)
+    });
+    return { windowMinutes: safeWindowMinutes, firstResponse: summary(firstResponse), resolve: summary(resolve) };
+  }
+
+  private requireOpenTicket(ticket: Ticket) {
+    if (terminalStatuses.includes(ticket.status)) throw new AppError(400, "INVALID_STATUS", "已完结工单不能分派或转交");
+  }
+
+  private async validHandler(id: string) {
+    const handler = await this.prisma.user.findUnique({ where: { dingtalkUserId: id }, include: { roleAssignments: true } });
+    if (!handler || handler.status !== "ACTIVE" || !hasAnyRole(handler, ["IT_HANDLER"])) {
+      throw new AppError(400, "HANDLER_NOT_FOUND", "请选择在职且有效的 IT 处理人");
+    }
+    return handler;
+  }
+
+  private slaFlags(ticket: Ticket, at: Date) {
+    // 只在实际业务操作时固化 SLA，保留已确认的历史标记；退回期间沿用暂停规则。
+    if (ticket.status === "RETURNED" || terminalStatuses.includes(ticket.status)) return {};
+    return {
+      isFirstResponseOverdue: ticket.isFirstResponseOverdue || Boolean(ticket.slaFirstResponseDeadline && (ticket.firstResponseAt || at) > ticket.slaFirstResponseDeadline),
+      isResolveOverdue: ticket.isResolveOverdue || Boolean(ticket.slaResolveDeadline && (ticket.resolvedAt || at) > ticket.slaResolveDeadline)
     };
+  }
+
+  private async claimCurrentHandler(tx: Prisma.TransactionClient, selected: Pick<User, "id" | "dingtalkUserId">) {
+    // 锁定与离职事务竞争的同一人员行，不能把事务外的处理人快照当作当前资格。
+    const claimed = await tx.user.updateMany({
+      where: { id: selected.id, dingtalkUserId: selected.dingtalkUserId, status: "ACTIVE", employmentStatus: "ACTIVE", mergedIntoId: null,
+        roleAssignments: { some: { role: "IT_HANDLER" } } },
+      data: { sessionVersion: { increment: 0 } }
+    });
+    return claimed.count === 1;
+  }
+
+  private async requireCurrentActor(tx: Prisma.TransactionClient, actor: User) {
+    // 与离职事务竞争同一用户行：认证后已归档的在途请求也不能继续写业务数据。
+    const claimed = await tx.user.updateMany({ where: { id: actor.id, status: "ACTIVE", employmentStatus: "ACTIVE", mergedIntoId: null, sessionVersion: actor.sessionVersion || 0 }, data: { sessionVersion: { increment: 0 } } });
+    if (claimed.count !== 1) throw new AppError(401, "SESSION_REVOKED", "人员状态已变更，请重新登录");
+  }
+
+  private async commitChange(
+    ticket: Ticket, operator: User, data: Prisma.TicketUncheckedUpdateManyInput,
+    action: TicketActionType, remark?: string, attachments?: AttachmentInput[],
+    extra?: (tx: Prisma.TransactionClient) => Promise<unknown>
+  ) {
+    return this.prisma.$transaction(async (tx) => {
+      await this.requireCurrentActor(tx, operator);
+      if (typeof data.handlerId === "string") {
+        if (typeof data.handlerUserId !== "string" || !await this.claimCurrentHandler(tx, { id: data.handlerId, dingtalkUserId: data.handlerUserId })) {
+          throw new AppError(400, "HANDLER_NOT_FOUND", "所选处理人的状态已变化，请重新选择在职且有效的 IT 处理人");
+        }
+      }
+      // 单调递增版本，避免同一毫秒的重复请求都通过 updatedAt 比较。
+      const updatedAt = new Date(Math.max(Date.now(), ticket.updatedAt.getTime() + 1));
+      const changed = await tx.ticket.updateMany({
+        where: { id: ticket.id, updatedAt: ticket.updatedAt, status: ticket.status, handlerUserId: ticket.handlerUserId },
+        data: { ...data, updatedAt }
+      });
+      if (changed.count !== 1) throw new AppError(409, "TICKET_CHANGED", "工单已被其他操作更新，请刷新后重试");
+      const updated = await tx.ticket.findUniqueOrThrow({ where: { id: ticket.id } });
+      await this.writeLog(ticket, operator, action, ticket.status, updated.status, remark, attachments, tx);
+      if (extra) await extra(tx);
+      return tx.ticket.findUniqueOrThrow({ where: { id: ticket.id }, include: { logs: { orderBy: { createdAt: "asc" } } } });
+    });
   }
 
   private async getTicketById(id: string) {
     const ticket = await this.prisma.ticket.findUnique({
       where: { id },
-      include: { logs: { orderBy: { createdAt: "asc" } } }
+      include: { logs: { orderBy: { createdAt: "asc" } }, ccRecipients: true }
     });
     if (!ticket) throw new AppError(404, "TICKET_NOT_FOUND", "工单不存在");
     return ticket;
@@ -523,9 +648,10 @@ export class TicketService {
     fromStatus: TicketStatus | null,
     toStatus: TicketStatus | null,
     remark?: string | null,
-    attachments?: AttachmentInput[]
+    attachments?: AttachmentInput[],
+    db: Prisma.TransactionClient | PrismaClient = this.prisma
   ) {
-    return this.prisma.ticketLog.create({
+    return db.ticketLog.create({
       data: {
         ticketId: ticket.id,
         ticketNo: ticket.ticketNo,
@@ -542,9 +668,7 @@ export class TicketService {
 
   private async generateTicketNo(date: Date) {
     // 中文注释：工单编号按自然日递增，格式为 ITYYYYMMDD0001。
-    const day = `${date.getFullYear()}${String(date.getMonth() + 1).padStart(2, "0")}${String(date.getDate()).padStart(2, "0")}`;
-    const start = new Date(date.getFullYear(), date.getMonth(), date.getDate());
-    const end = new Date(start.getTime() + 24 * 60 * 60 * 1000);
+    const { stamp: day, start, end } = businessDate(date);
     const count = await this.prisma.ticket.count({
       where: { createdAt: { gte: start, lt: end } }
     });
@@ -556,20 +680,11 @@ export class TicketService {
     throw new AppError(500, "TICKET_NO_GENERATE_FAILED", "工单编号生成失败");
   }
 
-  private async generateKbNo() {
-    const now = new Date();
-    const day = `${now.getFullYear()}${String(now.getMonth() + 1).padStart(2, "0")}${String(now.getDate()).padStart(2, "0")}`;
-    const count = await this.prisma.knowledgeBase.count({
-      where: { createdAt: { gte: startOfToday() } }
-    });
-    return `KB${day}${String(count + 1).padStart(4, "0")}`;
-  }
-
-  private async findPossibleDuplicate(applicantUserId: string, title: string, description: string) {
+  private async findPossibleDuplicate(applicant: UserWithRoles, title: string, description: string) {
     const since = new Date(Date.now() - 10 * 60 * 1000);
     return this.prisma.ticket.findFirst({
       where: {
-        applicantUserId,
+        AND: [applicantScope(applicant)],
         createdAt: { gte: since },
         OR: [
           { title: title.trim() },
@@ -590,6 +705,7 @@ export class TicketService {
       PENDING: ["ASSIGNED", "PROCESSING", "REJECTED", "CANCELLED", "CLOSED"],
       ASSIGNED: ["PROCESSING", "COMPLETED", "REJECTED", "CANCELLED", "CLOSED"],
       PROCESSING: ["COMPLETED", "ASSIGNED", "REJECTED", "CANCELLED", "CLOSED"],
+      RETURNED: ["PROCESSING", "ASSIGNED", "CANCELLED", "CLOSED"],
       COMPLETED: ["CLOSED"],
       CLOSED: [],
       REJECTED: [],
@@ -606,6 +722,7 @@ export class TicketService {
       PENDING: "待受理",
       ASSIGNED: "已分派",
       PROCESSING: "处理中",
+      RETURNED: "待发起人补充",
       COMPLETED: "已完成",
       CLOSED: "已关闭",
       REJECTED: "已驳回",
@@ -664,42 +781,54 @@ export class TicketService {
       `剩余时间：${this.remainingText(deadline, now)}`
     ].join("\n");
 
-    if (ticket.handlerUserId && ticket.handlerName) {
-      await this.notificationService.sendTicketNotification(
-        ticket,
-        { dingtalkUserId: ticket.handlerUserId, name: ticket.handlerName },
-        notificationType,
-        this.ticketNotice(ticket, headline)
-      );
-      return { ticketNo: ticket.ticketNo, receiver: ticket.handlerName, deadline };
+    const handler = ticket.handlerUserId
+      ? await this.prisma.user.findUnique({ where: ticket.handlerId ? { id: ticket.handlerId } : { dingtalkUserId: ticket.handlerUserId }, include: { roleAssignments: true } })
+      : null;
+    const receivers = handler?.status === "ACTIVE" && hasAnyRole(handler, ["IT_HANDLER"])
+      ? [handler]
+      : await this.prisma.user.findMany({ where: { roleAssignments: { some: { role: "SUPER_ADMIN" } }, status: "ACTIVE" }, take: 20 });
+    let sent = 0;
+    let skipped = 0;
+    const results = await this.notificationService.sendTicketEvent(ticket,
+      receivers.map(target => ({ target, notificationType, content: this.ticketNotice(ticket, headline) })),
+      [ticket.id, notificationType, deadline?.toISOString()].join(":"), this.ticketNotice(ticket, headline),
+      { legacyDeduplicationText: `截止时间：${deadline ? this.formatDate(deadline) : "-"}\n`, ccNotificationType: notificationType });
+    let failed = results.length ? 0 : 1;
+    for (const result of results) {
+      if (result?.delivery === "sent") sent += 1;
+      else if (result?.delivery === "skipped") skipped += 1;
+      else failed += 1;
     }
-
-    const admins = await this.prisma.user.findMany({
-      where: { roleAssignments: { some: { role: "SUPER_ADMIN" } }, status: "ACTIVE" },
-      take: 20
-    });
-    for (const admin of admins) {
-      await this.notificationService.sendTicketNotification(ticket, admin, notificationType, this.ticketNotice(ticket, headline));
-    }
-    return { ticketNo: ticket.ticketNo, receiver: admins.length ? "超级管理员" : "未找到接收人", deadline };
+    return { ticketNo: ticket.ticketNo, receiver: results.flatMap(result => result ? [result.receiverName] : []).join("、") || "未找到接收人", deadline, sent, skipped, failed };
   }
 
-  private async notifyApplicant(ticket: Ticket, content: string) {
-    await this.notificationService.sendTicketNotification(
-      ticket,
-      { dingtalkUserId: ticket.applicantUserId, name: ticket.applicantName },
-      "STATUS_UPDATED",
-      content
-    );
+  private async notifyEvent(ticket: Ticket, targets: Parameters<NotificationService["sendTicketEvent"]>[1], ccContent: string, ccNotificationType: NotificationType = "STATUS_UPDATED") {
+    // 每次已提交的业务版本只扩散一次抄送，通知故障不回滚工单。
+    try {
+      return await this.notificationService.sendTicketEvent(ticket, targets, `ticket:${ticket.id}:${ticket.updatedAt.toISOString()}`,
+        this.ticketNotice(ticket, ccContent), { ccNotificationType });
+    } catch (error) {
+      console.error("Ticket event notification failed", { ticketId: ticket.id, code: error instanceof AppError ? error.code : "UNKNOWN" });
+      return [];
+    }
   }
 
-  private async notifyAdmins(ticket: Ticket, content: string) {
-    const admins = await this.prisma.user.findMany({
-      where: { roleAssignments: { some: { role: "SUPER_ADMIN" } }, status: "ACTIVE" },
-      take: 20
-    });
-    for (const admin of admins) {
-      await this.notificationService.sendTicketNotification(ticket, admin, "NEW_TICKET_PENDING", content);
+  private async notifyApplicant(ticket: Ticket, content: string, ccContent: string, notificationType: NotificationType = "STATUS_UPDATED") {
+    await this.notifyEvent(ticket, [{ target: { id: ticket.applicantId || undefined, dingtalkUserId: ticket.applicantUserId, name: ticket.applicantName }, notificationType, content }], ccContent, notificationType);
+  }
+
+  private async adminTargets(content: string, notificationType: NotificationType): Promise<Parameters<NotificationService["sendTicketEvent"]>[1]> {
+    try {
+      const admins = await this.prisma.user.findMany({
+        where: { roleAssignments: { some: { role: "SUPER_ADMIN" } }, status: "ACTIVE" },
+        take: 20
+      });
+      return admins.map(target => ({ target, notificationType, content }));
+    } catch (error) {
+      console.error("Ticket admin notification failed", {
+        code: error && typeof error === "object" && "code" in error ? error.code : "UNKNOWN"
+      });
+      return [];
     }
   }
 }

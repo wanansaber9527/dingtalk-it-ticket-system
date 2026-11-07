@@ -1,35 +1,13 @@
-// 中文注释：业务服务层，封装工单系统核心业务规则和数据操作。
-import type { PrismaClient } from "@prisma/client";
+import { Prisma, type PrismaClient } from "@prisma/client";
 import { prisma as defaultPrisma } from "@/src/lib/prisma";
 import { requireRole } from "@/src/server/permissions";
 import type { UserWithRoles } from "@/src/lib/userRoles";
 import { TicketService } from "./ticketService";
+import { businessDate } from "./serviceHelpers";
 
-function startOfDay(date = new Date()) {
-  return new Date(date.getFullYear(), date.getMonth(), date.getDate());
-}
-
-function startOfWeek(date = new Date()) {
-  const day = date.getDay() || 7;
-  const start = startOfDay(date);
-  start.setDate(start.getDate() - day + 1);
-  return start;
-}
-
-function startOfMonth(date = new Date()) {
-  return new Date(date.getFullYear(), date.getMonth(), 1);
-}
-
-function minutesBetween(start?: Date | null, end?: Date | null) {
-  if (!start || !end) return null;
-  return Math.round((end.getTime() - start.getTime()) / 60_000);
-}
-
-function avg(values: Array<number | null>) {
-  const valid = values.filter((item): item is number => typeof item === "number" && Number.isFinite(item));
-  if (!valid.length) return 0;
-  return Math.round(valid.reduce((sum, item) => sum + item, 0) / valid.length);
-}
+type AggregateRow = Record<string, number | bigint | Prisma.Decimal | null>;
+type HandlerAverage = { handlerUserId: string | null; handlerName: string | null; averageMinutes: number | Prisma.Decimal | null };
+const number = (value: AggregateRow[string]) => value === null || value === undefined ? 0 : Number(value);
 
 export class DashboardService {
   constructor(
@@ -40,123 +18,68 @@ export class DashboardService {
   async dashboard(user: UserWithRoles) {
     requireRole(user, ["SUPER_ADMIN"]);
     await this.ticketService.refreshOverdueFlags();
-    // 中文注释：后台看板只面向管理员，统计全量数据。
-    const now = new Date();
-    const today = startOfDay(now);
-    const week = startOfWeek(now);
-    const month = startOfMonth(now);
-    const scope = {};
+    const { start: today, stamp } = businessDate();
+    const weekday = new Date(today.getTime() + 8 * 3_600_000).getUTCDay() || 7;
+    const week = new Date(today.getTime() - (weekday - 1) * 86_400_000);
+    const month = new Date(`${stamp.slice(0, 4)}-${stamp.slice(4, 6)}-01T00:00:00+08:00`);
 
-    const [
-      todayNew,
-      weekNew,
-      monthNew,
-      total,
-      pending,
-      assigned,
-      processing,
-      completed,
-      overdue,
-      tickets,
-      categoryRanking,
-      departmentRanking,
-      handlerRanking
-    ] = await Promise.all([
-      this.prisma.ticket.count({ where: { ...scope, createdAt: { gte: today } } }),
-      this.prisma.ticket.count({ where: { ...scope, createdAt: { gte: week } } }),
-      this.prisma.ticket.count({ where: { ...scope, createdAt: { gte: month } } }),
-      this.prisma.ticket.count({ where: scope }),
-      this.prisma.ticket.count({ where: { ...scope, status: "PENDING" } }),
-      this.prisma.ticket.count({ where: { ...scope, status: "ASSIGNED" } }),
-      this.prisma.ticket.count({ where: { ...scope, status: "PROCESSING" } }),
-      this.prisma.ticket.count({ where: { ...scope, status: { in: ["COMPLETED", "CLOSED"] } } }),
-      this.prisma.ticket.count({
-        where: { ...scope, OR: [{ isFirstResponseOverdue: true }, { isResolveOverdue: true }] }
-      }),
-      this.prisma.ticket.findMany({ where: scope, take: 500, orderBy: { createdAt: "desc" } }),
-      this.prisma.ticket.groupBy({
-        by: ["categoryName"],
-        where: scope,
-        _count: { _all: true },
-        orderBy: { _count: { categoryName: "desc" } },
-        take: 8
-      }),
-      this.prisma.ticket.groupBy({
-        by: ["applicantDepartment"],
-        where: scope,
-        _count: { _all: true },
-        orderBy: { _count: { applicantDepartment: "desc" } },
-        take: 8
-      }),
-      this.prisma.ticket.groupBy({
-        by: ["handlerName"],
-        where: { ...scope, handlerName: { not: null } },
-        _count: { _all: true },
-        orderBy: { _count: { handlerName: "desc" } },
-        take: 8
-      })
-    ]);
-
-    const firstResponseOverdueCount = tickets.filter((ticket) => ticket.isFirstResponseOverdue).length;
-    const resolveOverdueCount = tickets.filter((ticket) => ticket.isResolveOverdue).length;
-    const satisfaction = {
-      satisfied: tickets.filter((ticket) => ticket.satisfactionLevel === "SATISFIED").length,
-      normal: tickets.filter((ticket) => ticket.satisfactionLevel === "NORMAL").length,
-      unsatisfied: tickets.filter((ticket) => ticket.satisfactionLevel === "UNSATISFIED").length
-    };
-
-    const handlerAverageResolve = Object.values(
-      tickets.reduce<Record<string, number[]>>((acc, ticket) => {
-        if (!ticket.handlerName || !ticket.resolvedAt) return acc;
-        const value = minutesBetween(ticket.createdAt, ticket.resolvedAt);
-        if (value === null) return acc;
-        acc[ticket.handlerName] ||= [];
-        acc[ticket.handlerName].push(value);
-        return acc;
-      }, {})
-    );
-
-    const handlerAverageResolveRanking = Object.entries(
-      tickets.reduce<Record<string, number[]>>((acc, ticket) => {
-        if (!ticket.handlerName || !ticket.resolvedAt) return acc;
-        const value = minutesBetween(ticket.createdAt, ticket.resolvedAt);
-        if (value === null) return acc;
-        acc[ticket.handlerName] ||= [];
-        acc[ticket.handlerName].push(value);
-        return acc;
-      }, {})
-    )
-      .map(([handlerName, values]) => ({ handlerName, averageMinutes: avg(values) }))
-      .sort((a, b) => a.averageMinutes - b.averageMinutes)
-      .slice(0, 8);
-
-    return {
-      cards: {
-        todayNew,
-        weekNew,
-        monthNew,
-        total,
-        pending,
-        assigned,
-        processing,
-        completed,
-        overdue,
-        firstResponseOverdueRate: tickets.length ? Math.round((firstResponseOverdueCount / tickets.length) * 100) : 0,
-        resolveOverdueRate: tickets.length ? Math.round((resolveOverdueCount / tickets.length) * 100) : 0,
-        averageFirstResponseMinutes: avg(tickets.map((ticket) => minutesBetween(ticket.createdAt, ticket.firstResponseAt))),
-        averageResolveMinutes: avg(tickets.map((ticket) => minutesBetween(ticket.createdAt, ticket.resolvedAt))),
-        satisfaction
-      },
-      rankings: {
-        category: categoryRanking.map((item) => ({ name: item.categoryName, count: item._count._all })),
-        department: departmentRanking.map((item) => ({
-          name: item.applicantDepartment || "未填写",
-          count: item._count._all
-        })),
-        handler: handlerRanking.map((item) => ({ name: item.handlerName || "未分派", count: item._count._all })),
-        handlerAverageResolve: handlerAverageResolveRanking,
-        handlerAverageResolveGroups: handlerAverageResolve.length
-      }
-    };
+    // 同一事务快照中的全量聚合，不截断样本，也不把工单正文拉入内存。
+    return this.prisma.$transaction(async (tx) => {
+      const [rows, categoryRanking, departmentRanking, handlerRanking, handlerAverages] = await Promise.all([
+        tx.$queryRaw<AggregateRow[]>(Prisma.sql`
+          SELECT COUNT(*) AS total,
+            SUM(createdAt >= ${today}) AS todayNew,
+            SUM(createdAt >= ${week}) AS weekNew,
+            SUM(createdAt >= ${month}) AS monthNew,
+            SUM(status = 'PENDING') AS pending,
+            SUM(status = 'ASSIGNED') AS assigned,
+            SUM(status = 'PROCESSING') AS processing,
+            SUM(status = 'RETURNED') AS returned,
+            SUM(status IN ('COMPLETED', 'CLOSED')) AS completed,
+            SUM(status = 'REJECTED') AS rejected,
+            SUM(status = 'CANCELLED') AS cancelled,
+            SUM(isFirstResponseOverdue OR isResolveOverdue) AS overdue,
+            SUM(isFirstResponseOverdue) AS firstResponseOverdue,
+            SUM(isResolveOverdue) AS resolveOverdue,
+            AVG(ROUND(TIMESTAMPDIFF(MICROSECOND, createdAt, firstResponseAt) / 60000000)) AS averageFirstResponseMinutes,
+            AVG(ROUND(TIMESTAMPDIFF(MICROSECOND, createdAt, resolvedAt) / 60000000)) AS averageResolveMinutes,
+            SUM(satisfactionLevel = 'SATISFIED') AS satisfied,
+            SUM(satisfactionLevel = 'NORMAL') AS normal,
+            SUM(satisfactionLevel = 'UNSATISFIED') AS unsatisfied
+          FROM Ticket
+        `),
+        tx.ticket.groupBy({ by: ["categoryName"], _count: { _all: true }, orderBy: { _count: { categoryName: "desc" } }, take: 8 }),
+        tx.ticket.groupBy({ by: ["applicantDepartment"], _count: { _all: true }, orderBy: { _count: { applicantDepartment: "desc" } }, take: 8 }),
+        tx.ticket.groupBy({ by: ["handlerUserId", "handlerName"], where: { handlerName: { not: null } }, _count: { _all: true }, orderBy: { _count: { handlerName: "desc" } }, take: 8 }),
+        tx.$queryRaw<HandlerAverage[]>(Prisma.sql`
+          SELECT handlerUserId, handlerName,
+            AVG(ROUND(TIMESTAMPDIFF(MICROSECOND, createdAt, resolvedAt) / 60000000)) AS averageMinutes
+          FROM Ticket WHERE handlerName IS NOT NULL AND resolvedAt IS NOT NULL
+          GROUP BY handlerUserId, handlerName ORDER BY averageMinutes ASC
+        `)
+      ]);
+      const row = rows[0] || {};
+      const total = number(row.total);
+      return {
+        cards: {
+          todayNew: number(row.todayNew), weekNew: number(row.weekNew), monthNew: number(row.monthNew), total,
+          pending: number(row.pending), assigned: number(row.assigned), processing: number(row.processing),
+          returned: number(row.returned), completed: number(row.completed), rejected: number(row.rejected), cancelled: number(row.cancelled),
+          overdue: number(row.overdue),
+          firstResponseOverdueRate: total ? Math.round(number(row.firstResponseOverdue) / total * 100) : 0,
+          resolveOverdueRate: total ? Math.round(number(row.resolveOverdue) / total * 100) : 0,
+          averageFirstResponseMinutes: Math.round(number(row.averageFirstResponseMinutes)),
+          averageResolveMinutes: Math.round(number(row.averageResolveMinutes)),
+          satisfaction: { satisfied: number(row.satisfied), normal: number(row.normal), unsatisfied: number(row.unsatisfied) }
+        },
+        rankings: {
+          category: categoryRanking.map((item) => ({ name: item.categoryName, count: item._count._all })),
+          department: departmentRanking.map((item) => ({ name: item.applicantDepartment || "未填写", count: item._count._all })),
+          handler: handlerRanking.map((item) => ({ name: item.handlerName || "未分派", count: item._count._all })),
+          handlerAverageResolve: handlerAverages.slice(0, 8).map((item) => ({ handlerName: item.handlerName || "未分派", averageMinutes: Math.round(number(item.averageMinutes)) })),
+          handlerAverageResolveGroups: handlerAverages.length
+        }
+      };
+    }, { isolationLevel: Prisma.TransactionIsolationLevel.RepeatableRead });
   }
 }

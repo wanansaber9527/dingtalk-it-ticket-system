@@ -7,35 +7,62 @@
     "dev": "next dev",
     "build": "next build",
     "start": "next start",
-    "lint": "next lint",
+    "lint": "eslint app components src scripts tests --max-warnings=0",
     "db:push": "prisma db push",
     "db:seed": "prisma db seed",
     "prisma": "prisma",
-    "init:admin": "tsx scripts/init-admin.ts"
+    "init:admin": "tsx scripts/init-admin.ts",
+    "typecheck": "tsc --noEmit",
+    "test": "node --import tsx --test tests/*.test.ts",
+    "local:setup": "node scripts/local-env.mjs setup",
+    "local:start": "node scripts/local-env.mjs start",
+    "local:build": "node scripts/local-env.mjs build",
+    "test:local": "node scripts/local-env.mjs test",
+    "directory:worker": "tsx scripts/directory-sync-worker.ts",
+    "directory:once": "tsx scripts/directory-sync-worker.ts --once",
+    "local:sync": "node scripts/local-env.mjs sync-once"
   },
   "dependencies": {
     "@ant-design/icons": "^5.6.1",
     "@ant-design/nextjs-registry": "^1.0.2",
-    "@prisma/client": "^6.7.0",
+    "@ant-design/v5-patch-for-react-19": "^1.0.3",
+    "@prisma/client": "6.19.3",
     "antd": "^5.25.0",
+    "bmp-js": "0.1.0",
     "dayjs": "^1.11.13",
-    "next": "^15.3.2",
-    "react": "^19.1.0",
-    "react-dom": "^19.1.0",
+    "heic-decode": "2.1.0",
+    "next": "15.5.29",
+    "react": "19.2.6",
+    "react-dom": "19.2.6",
+    "react-markdown": "10.1.0",
     "recharts": "^3.8.1",
-    "zod": "^3.24.4"
+    "remark-gfm": "4.0.1",
+    "sharp": "0.35.5",
+    "zod": "4.6.7"
   },
   "devDependencies": {
+    "@eslint/eslintrc": "^3.3.1",
     "@types/node": "^22.15.18",
     "@types/react": "^19.1.4",
     "@types/react-dom": "^19.1.5",
     "eslint": "^9.27.0",
-    "eslint-config-next": "^15.3.2",
-    "prisma": "^6.7.0",
+    "eslint-config-next": "15.5.29",
+    "prisma": "6.19.3",
     "tsx": "^4.19.4",
     "typescript": "^5.8.3"
   },
   "prisma": {
     "seed": "tsx prisma/seed.ts"
+  },
+  "overrides": {
+    "postcss": "^8.5.25",
+    "sharp": "0.35.5",
+    "deepmerge-ts": "8.0.2",
+    "nanoid": "^3.3.18",
+    "source-map-js": "^1.2.2",
+    "@typescript-eslint/eslint-plugin": "8.72.1",
+    "@typescript-eslint/parser": "8.72.1",
+    "minimatch@>=7": "11.0.5",
+    "brace-expansion@1": "1.1.21"
   }
 }

@@ -10,7 +10,7 @@ export default function OpenInDingTalkPage() {
         <Typography.Title level={4} style={{ marginTop: 0 }}>
           请在钉钉客户端内打开
         </Typography.Title>
-        <Typography.Paragraph style={{ marginBottom: 0, color: "#68788a" }}>
+        <Typography.Paragraph type="secondary" style={{ marginBottom: 0 }}>
           请在钉钉客户端内打开本页面后再提交工单。
         </Typography.Paragraph>
       </Card>
